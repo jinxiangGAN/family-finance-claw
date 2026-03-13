@@ -13,6 +13,10 @@ MINIMAX_API_KEY: str = os.getenv("MINIMAX_API_KEY", "")
 MINIMAX_GROUP_ID: str = os.getenv("MINIMAX_GROUP_ID", "")
 MINIMAX_MODEL: str = os.getenv("MINIMAX_MODEL", "abab6.5s-chat")
 
+# MiniMax API cost control
+# Monthly token limit (0 = unlimited). abab6.5s ~ ¥0.001/1k tokens
+MINIMAX_MONTHLY_TOKEN_LIMIT: int = int(os.getenv("MINIMAX_MONTHLY_TOKEN_LIMIT", "500000"))
+
 # Database
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/expenses.db")
 
@@ -38,3 +42,7 @@ CURRENCY: str = os.getenv("CURRENCY", "SGD")
 
 # Expense categories
 CATEGORIES: list[str] = ["餐饮", "交通", "购物", "娱乐", "生活", "医疗", "其他"]
+
+# Weekly summary: day of week (0=Monday, 6=Sunday)
+WEEKLY_SUMMARY_DAY: int = int(os.getenv("WEEKLY_SUMMARY_DAY", "6"))  # Sunday
+WEEKLY_SUMMARY_HOUR: int = int(os.getenv("WEEKLY_SUMMARY_HOUR", "20"))  # 8 PM
