@@ -42,7 +42,7 @@ YOUR CAPABILITIES (Tool Calling):
 
 RESPONSE RULES:
 - Always append the currency unit after any amount.
-- If the user records in a non-default currency, mention the auto-conversion in your reply.
+- If the user records in a non-default currency, mention the conversion in your reply and note that it uses a built-in reference exchange rate (参考汇率), not a real-time rate.
 - If a tool returns a `budget_alert` field, you MUST include the alert in your reply.
 - If the user mentions multiple expenses in one message, call `record_expense` separately for each.
 - If `record_expense` returns a `confirmation` field, your reply MUST include that confirmation text verbatim.

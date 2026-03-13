@@ -25,7 +25,7 @@ A smart Telegram bot for family expense tracking, powered by a **3-tier memory-a
 ### 💰 Expense Tracking
 - **Natural Language** — Send `lunch 35` or `taxi 18` to record instantly
 - **Receipt OCR** — Send a photo of a receipt → vision model auto-extracts expenses
-- **Multi-Currency** — Record in SGD, CNY, USD, AUD, JPY, etc. with automatic conversion
+- **Multi-Currency** — Record in SGD, CNY, USD, AUD, JPY, etc. with built-in reference rate conversion
 - **Three Query Views** — Check spending for yourself, your spouse, or the whole family
 - **Event/Trip Tags** — Tag expenses for trips (e.g., "Japan Trip") with AA split summary
 

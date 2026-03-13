@@ -269,11 +269,43 @@ async def agent_handle_image(
         if items and items[0].get("error"):
             return f"📷 无法识别图片中的消费信息：{items[0]['error']}\n请手动输入。"
 
-        replies = []
+        # ── Robust validation: filter out malformed / zero-amount items ──
+        valid_items: list[dict] = []
+        skipped = 0
         for item in items:
+            if not isinstance(item, dict):
+                skipped += 1
+                continue
+            # Amount must be present and positive
+            try:
+                amt = float(item.get("amount", 0))
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
+            if amt <= 0:
+                logger.warning("[OCR_SKIP] amount <= 0: %s", item)
+                skipped += 1
+                continue
+            # Category must be a non-empty string
+            cat = item.get("category")
+            if not cat or not isinstance(cat, str):
+                item["category"] = "其他"
+            # Note fallback
+            if not item.get("note") or not isinstance(item.get("note"), str):
+                item["note"] = "收据"
+            valid_items.append(item)
+
+        if not valid_items:
+            msg = "📷 未能从图片中提取到有效消费信息，请手动输入。"
+            if skipped:
+                msg += f"\n（识别到 {skipped} 条数据但无法解析）"
+            return msg
+
+        replies = []
+        for item in valid_items:
             result = execute_tool("record_expense", user_id, user_name, {
                 "category": item.get("category", "其他"),
-                "amount": item.get("amount", 0),
+                "amount": float(item["amount"]),
                 "note": item.get("note", "收据"),
                 "currency": item.get("currency", CURRENCY),
             })
@@ -283,13 +315,16 @@ async def agent_handle_image(
                 if result.get("note"):
                     line += f"（{result['note']}）"
                 if result.get("amount_sgd") and cur != CURRENCY:
-                    line += f" → {result['amount_sgd']:.2f} {CURRENCY}"
+                    line += f" → {result['amount_sgd']:.2f} {CURRENCY}（参考汇率）"
                 replies.append(line)
                 if result.get("budget_alert"):
                     replies.append(result["budget_alert"])
 
         if replies:
-            return "📷 收据识别成功！\n\n" + "\n".join(replies)
+            header = "📷 收据识别成功！\n\n"
+            if skipped:
+                header += f"⚠️ 跳过了 {skipped} 条无法解析的数据\n\n"
+            return header + "\n".join(replies)
         return "📷 未能从图片中提取到消费信息，请手动输入。"
 
     except Exception:

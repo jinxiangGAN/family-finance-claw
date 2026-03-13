@@ -101,7 +101,7 @@ def _build_weekly_report(user_id: int) -> str:
             limit_val = float(row["monthly_limit"])
             if cat == "_total":
                 spent = get_month_total([user_id])
-                cat_label = "总计"
+                cat_label = "个人总计"
             else:
                 spent = get_category_total(cat, [user_id])
                 cat_label = cat
@@ -258,7 +258,7 @@ async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 limit_val = float(row["monthly_limit"])
                 if cat == "_total":
                     spent = get_month_total([user_id])
-                    cat_label = "总预算"
+                    cat_label = "个人总预算"
                 else:
                     spent = get_category_total(cat, [user_id])
                     cat_label = cat

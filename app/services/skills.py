@@ -25,7 +25,10 @@ from app.services.stats_service import (
 
 logger = logging.getLogger(__name__)
 
-# Simple in-memory exchange rates (updated periodically or hardcoded)
+# ⚠️ REFERENCE exchange rates — NOT real-time.
+# These are approximate mid-market rates for quick household bookkeeping.
+# For actual financial decisions, check a live source.
+# TODO: Replace with a live API (e.g. exchangerate-api.com) if long-term accuracy matters.
 EXCHANGE_RATES: dict[str, float] = {
     "SGD": 1.0,
     "CNY": 0.19,   # 1 CNY ≈ 0.19 SGD
@@ -93,7 +96,7 @@ def skill_record_expense(user_id: int, user_name: str, params: dict) -> dict:
     # ── Build formatted confirmation string ──
     confirm_parts = [f"✅ 已记录：{category} {amount:.2f} {currency}"]
     if currency != CURRENCY:
-        confirm_parts[0] += f" → {amount_sgd:.2f} {CURRENCY}"
+        confirm_parts[0] += f" → {amount_sgd:.2f} {CURRENCY}（参考汇率）"
     confirm_parts.append(f"👤 归属：{user_name}")
     if note:
         confirm_parts.append(f"📝 备注：{note}")
@@ -194,7 +197,7 @@ def skill_set_budget(user_id: int, user_name: str, params: dict) -> dict:
         )
         conn.commit()
 
-    cat_label = "总预算" if category == "_total" else f"{category}预算"
+    cat_label = "个人总预算" if category == "_total" else f"{category}预算"
     return {
         "success": True,
         "message": f"已设置{cat_label}：{amount:.2f} {CURRENCY}/月",
@@ -221,7 +224,7 @@ def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
         limit_val = float(row["monthly_limit"])
         if cat == "_total":
             spent = get_month_total([user_id])
-            cat_label = "总计"
+            cat_label = "个人总计"
         else:
             spent = get_category_total(cat, [user_id])
             cat_label = cat
@@ -262,30 +265,40 @@ def skill_get_spending_analysis(user_id: int, user_name: str, params: dict) -> d
 
 
 def skill_start_event(user_id: int, user_name: str, params: dict) -> dict:
-    """Start an event/trip tag. All subsequent expenses are tagged automatically."""
+    """Start an event/trip tag for the WHOLE family.
+
+    When one person starts an event, it is activated for every configured
+    family member so both spouses' expenses get auto-tagged.
+    """
     tag = params.get("tag", "").strip()
     description = params.get("description", "").strip()
     if not tag:
         return {"success": False, "message": "请提供事件标签名"}
 
+    # Resolve all family member IDs (fallback to current user only)
+    member_ids = list(FAMILY_MEMBERS.keys()) if FAMILY_MEMBERS else [user_id]
+    if user_id not in member_ids:
+        member_ids.append(user_id)
+
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
     with get_connection() as conn:
-        # Deactivate all other events first
-        conn.execute("UPDATE events SET is_active = 0 WHERE user_id = ?", (user_id,))
-        conn.execute(
-            "INSERT INTO events (user_id, tag, description, is_active, created_at) "
-            "VALUES (?, ?, ?, 1, ?) "
-            "ON CONFLICT(user_id, tag) DO UPDATE SET is_active = 1, description = ?, created_at = ?",
-            (user_id, tag, description, now.isoformat(), description, now.isoformat()),
-        )
+        for uid in member_ids:
+            # Deactivate all other events first
+            conn.execute("UPDATE events SET is_active = 0 WHERE user_id = ?", (uid,))
+            conn.execute(
+                "INSERT INTO events (user_id, tag, description, is_active, created_at) "
+                "VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(user_id, tag) DO UPDATE SET is_active = 1, description = ?, created_at = ?",
+                (uid, tag, description, now.isoformat(), description, now.isoformat()),
+            )
         conn.commit()
 
-    return {"success": True, "message": f"已开启事件标签「{tag}」，后续记账将自动标记", "tag": tag}
+    return {"success": True, "message": f"已为全家开启事件标签「{tag}」，后续记账将自动标记", "tag": tag}
 
 
 def skill_stop_event(user_id: int, user_name: str, params: dict) -> dict:
-    """Stop the active event tag."""
+    """Stop the active event tag for the WHOLE family."""
     with get_connection() as conn:
         row = conn.execute(
             "SELECT tag FROM events WHERE user_id = ? AND is_active = 1", (user_id,)
@@ -293,9 +306,17 @@ def skill_stop_event(user_id: int, user_name: str, params: dict) -> dict:
         if not row:
             return {"success": False, "message": "当前没有活跃的事件标签"}
         tag = row["tag"]
-        conn.execute("UPDATE events SET is_active = 0 WHERE user_id = ?", (user_id,))
+        # Deactivate for ALL family members (not just the caller)
+        member_ids = list(FAMILY_MEMBERS.keys()) if FAMILY_MEMBERS else [user_id]
+        if user_id not in member_ids:
+            member_ids.append(user_id)
+        placeholders = ",".join("?" for _ in member_ids)
+        conn.execute(
+            f"UPDATE events SET is_active = 0 WHERE user_id IN ({placeholders})",
+            member_ids,
+        )
         conn.commit()
-    return {"success": True, "message": f"已关闭事件标签「{tag}」", "tag": tag}
+    return {"success": True, "message": f"已为全家关闭事件标签「{tag}」", "tag": tag}
 
 
 def skill_query_event_summary(user_id: int, user_name: str, params: dict) -> dict:
@@ -449,11 +470,11 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "set_budget",
-            "description": "设置每月预算上限。category 为 '_total' 表示总预算。",
+            "description": "设置当前用户的每月预算上限（个人维度）。category 为 '_total' 表示个人总预算。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "预算分类，'_total' 表示总预算"},
+                    "category": {"type": "string", "description": "预算分类，'_total' 表示个人总预算"},
                     "amount": {"type": "number", "description": "每月预算金额"},
                 },
                 "required": ["category", "amount"],
@@ -585,9 +606,9 @@ def _check_budget_alert(user_id: int, category: str) -> Optional[str]:
             limit_val = float(row["monthly_limit"])
             spent = get_month_total([user_id])
             if spent > limit_val:
-                alerts.append(f"⚠️ 总支出已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
+                alerts.append(f"⚠️ 个人总支出已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
             elif spent > limit_val * 0.8:
-                alerts.append(f"⚡ 总支出已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
+                alerts.append(f"⚡ 个人总支出已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
 
     return "\n".join(alerts) if alerts else None
 
