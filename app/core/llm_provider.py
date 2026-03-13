@@ -3,7 +3,9 @@
 Supports: MiniMax, OpenAI, DeepSeek, Qwen, Gemini, and any OpenAI-compatible endpoint.
 Switch providers by changing LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env.
 
-v4: Added embed() for vector memory support.
+Multi-model rotation: set LLM_MODEL to a comma-separated list of models
+(e.g. "gemini-3-flash-preview,gemini-2.0-flash,gemini-1.5-flash") and requests
+will round-robin across them. On 429, the next model is tried instantly.
 """
 
 import asyncio
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 # Rate-limit retry settings
 _MAX_RETRIES = 3
-_DEFAULT_RETRY_WAIT = 10  # seconds (Gemini free tier = 15 RPM)
+_DEFAULT_RETRY_WAIT = 10  # seconds (Gemini free tier = 15 RPM per model)
 
 
 # ═══════════════════════════════════════════
@@ -54,7 +56,12 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 # ═══════════════════════════════════════════
 
 class LLMProvider:
-    """Unified LLM interface for chat completion, vision, and embedding."""
+    """Unified LLM interface for chat completion, vision, and embedding.
+
+    Supports multi-model rotation: pass a comma-separated model string
+    (e.g. "model-a,model-b,model-c") to distribute load across models.
+    On HTTP 429, the next model is tried instantly (different quota pool).
+    """
 
     def __init__(
         self,
@@ -64,13 +71,27 @@ class LLMProvider:
         timeout: int = 30,
     ):
         self.api_key = api_key
-        self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    # ── HTTP helper with 429 rate-limit retry ──
+        # ── Multi-model pool ──
+        self._models = [m.strip() for m in model.split(",") if m.strip()]
+        if not self._models:
+            raise ValueError("At least one model must be specified")
+        self.model = self._models[0]  # primary (backward compat)
+        self._model_idx = 0
 
-    # Retryable HTTP status codes
+        if len(self._models) > 1:
+            logger.info("[LLM] Model pool (%d): %s", len(self._models), " → ".join(self._models))
+
+    def _next_model(self) -> str:
+        """Round-robin model selection."""
+        model = self._models[self._model_idx % len(self._models)]
+        self._model_idx += 1
+        return model
+
+    # ── HTTP helper with retry + model rotation ──
+
     _RETRYABLE_STATUSES = {429, 503, 502, 500}
 
     async def _post_with_retry(
@@ -78,9 +99,8 @@ class LLMProvider:
     ) -> httpx.Response:
         """POST with automatic retry on transient HTTP errors.
 
-        Retries on: 429 (rate limit), 503/502/500 (service unavailable).
-        Gemini free tier = 15 RPM; this prevents the bot from crashing
-        when two family members record expenses at the same time.
+        - 429 (rate limit): rotate to next model instantly (no wait).
+        - 503/502/500 (server error): wait and retry same model.
         """
         for attempt in range(1, _MAX_RETRIES + 1):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -90,13 +110,27 @@ class LLMProvider:
                 resp.raise_for_status()
                 return resp
 
-            # Transient error — wait and retry
-            retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
-            logger.warning(
-                "[LLM] HTTP %d, retry %d/%d after %ds — %s",
-                resp.status_code, attempt, _MAX_RETRIES, retry_after, url,
-            )
-            await asyncio.sleep(retry_after)
+            if resp.status_code == 429 and len(self._models) > 1:
+                # Rate limited — rotate model and retry instantly
+                next_m = self._next_model()
+                # Skip if same model came up in rotation
+                if next_m == payload.get("model") and len(self._models) > 1:
+                    next_m = self._next_model()
+                logger.warning(
+                    "[LLM] 429 on %s → rotating to %s (%d/%d)",
+                    payload.get("model", "?"), next_m, attempt, _MAX_RETRIES,
+                )
+                payload["model"] = next_m
+                # No sleep — different model has its own quota
+            else:
+                # 503/502/500 or 429 with single model — wait and retry
+                retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
+                logger.warning(
+                    "[LLM] HTTP %d on %s, retry %d/%d after %ds",
+                    resp.status_code, payload.get("model", "?"),
+                    attempt, _MAX_RETRIES, retry_after,
+                )
+                await asyncio.sleep(retry_after)
 
         # Exhausted retries — raise so caller can handle it
         resp.raise_for_status()
@@ -118,7 +152,7 @@ class LLMProvider:
             "Content-Type": "application/json",
         }
         payload: dict = {
-            "model": self.model,
+            "model": self._next_model(),
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -129,7 +163,7 @@ class LLMProvider:
         resp = await self._post_with_retry(url, headers, payload)
 
         data = resp.json()
-        logger.debug("LLM response: %s", json.dumps(data, ensure_ascii=False)[:500])
+        logger.debug("LLM [%s] response: %s", payload["model"], json.dumps(data, ensure_ascii=False)[:500])
 
         message = data.get("choices", [{}])[0].get("message", {})
         usage = data.get("usage")
@@ -165,7 +199,7 @@ class LLMProvider:
         })
 
         payload = {
-            "model": self.model,
+            "model": self._next_model(),
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -174,7 +208,7 @@ class LLMProvider:
         resp = await self._post_with_retry(url, headers, payload)
 
         data = resp.json()
-        logger.debug("LLM vision response: %s", json.dumps(data, ensure_ascii=False)[:500])
+        logger.debug("LLM vision [%s] response: %s", payload["model"], json.dumps(data, ensure_ascii=False)[:500])
 
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         usage = data.get("usage")
@@ -186,6 +220,7 @@ class LLMProvider:
         """Generate an embedding vector via the /embeddings endpoint.
 
         Returns None if the API call fails (caller should fall back to FTS5).
+        Note: embedding uses a dedicated model, not the chat model pool.
         """
         url = f"{self.base_url}/embeddings"
         headers = {
