@@ -1,6 +1,6 @@
 """Abstract LLM provider supporting OpenAI-compatible APIs.
 
-Supports: MiniMax, OpenAI, DeepSeek, Qwen, and any OpenAI-compatible endpoint.
+Supports: MiniMax, OpenAI, DeepSeek, Qwen, Gemini, and any OpenAI-compatible endpoint.
 Switch providers by changing LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env.
 
 v4: Added embed() for vector memory support.
@@ -199,6 +199,12 @@ PROVIDER_PRESETS: dict[str, dict] = {
         "default_model": "qwen-plus",
         "vision_model": "qwen-vl-plus",
         "embedding_model": "text-embedding-v3",
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_model": "gemini-3-flash-preview",
+        "vision_model": "gemini-3-flash-preview",
+        "embedding_model": "text-embedding-004",
     },
     "custom": {
         "base_url": "",

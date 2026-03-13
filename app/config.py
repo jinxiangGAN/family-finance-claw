@@ -9,10 +9,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 # ─── LLM Provider ───
-# Supported: openai, minimax, deepseek, qwen, custom
-LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "minimax")
+# Supported: openai, minimax, deepseek, qwen, gemini, custom
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini")
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or os.getenv("MINIMAX_API_KEY", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "") or os.getenv("MINIMAX_MODEL", "abab6.5s-chat")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "") or os.getenv("MINIMAX_MODEL", "gemini-3-flash-preview")
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 # Vision model (for receipt OCR) — defaults to same as LLM_MODEL
 LLM_VISION_MODEL: str = os.getenv("LLM_VISION_MODEL", "")
