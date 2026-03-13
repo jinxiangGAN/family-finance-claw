@@ -1,4 +1,4 @@
-"""Entry point for the Family Finance Telegram Bot."""
+"""Entry point for Family Finance Claw 🦞."""
 
 import logging
 import sys
@@ -33,7 +33,7 @@ def main() -> None:
     init_db()
 
     # Build and run bot (polling mode)
-    logger.info("Starting Family Finance Bot v4 (polling mode)...")
+    logger.info("Starting Family Finance Claw 🦞 v4 (polling mode)...")
     app = build_application()
     app.run_polling(drop_pending_updates=True)
 

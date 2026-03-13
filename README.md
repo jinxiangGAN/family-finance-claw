@@ -1,4 +1,4 @@
-# Family Finance Telegram Bot
+# Family Finance Claw 🦞
 
 A smart Telegram bot for family expense tracking, powered by a **3-tier memory-augmented LLM agent** with MCP-style pluggable tools and dynamic prompt assembly. Designed for a 2-person household to record, query, and analyze daily spending through natural language — with long-term memory, user profiling, and context-aware persona that truly understands your family.
 
@@ -91,7 +91,7 @@ SQLite Database
 ## Project Structure
 
 ```
-family-finance-bot/
+family-finance-claw/
 ├── app/
 │   ├── main.py              # Entry point
 │   ├── telegram_bot.py      # Bot handlers, commands, scheduled jobs
@@ -127,8 +127,8 @@ family-finance-bot/
 ### Option A: Direct
 
 ```bash
-git clone https://github.com/jinxiangGAN/family-finance-bot.git
-cd family-finance-bot
+git clone https://github.com/jinxiangGAN/family-finance-claw.git
+cd family-finance-claw
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your tokens
@@ -138,8 +138,8 @@ python -m app.main
 ### Option B: Docker
 
 ```bash
-git clone https://github.com/jinxiangGAN/family-finance-bot.git
-cd family-finance-bot
+git clone https://github.com/jinxiangGAN/family-finance-claw.git
+cd family-finance-claw
 cp .env.example .env
 # Edit .env with your tokens
 docker-compose up -d
