@@ -6,6 +6,7 @@ Switch providers by changing LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL 
 v4: Added embed() for vector memory support.
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -15,6 +16,10 @@ from typing import Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Rate-limit retry settings
+_MAX_RETRIES = 3
+_DEFAULT_RETRY_WAIT = 10  # seconds (Gemini free tier = 15 RPM)
 
 
 # ═══════════════════════════════════════════
@@ -63,6 +68,38 @@ class LLMProvider:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    # ── HTTP helper with 429 rate-limit retry ──
+
+    async def _post_with_retry(
+        self, url: str, headers: dict, payload: dict
+    ) -> httpx.Response:
+        """POST with automatic retry on HTTP 429 (rate limit).
+
+        Gemini free tier = 15 RPM; this prevents the bot from crashing
+        when two family members record expenses at the same time.
+        """
+        for attempt in range(1, _MAX_RETRIES + 1):
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+
+            if resp.status_code != 429:
+                resp.raise_for_status()
+                return resp
+
+            # 429 — parse Retry-After or use default wait
+            retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
+            logger.warning(
+                "[LLM] Rate limited (429), retry %d/%d after %ds",
+                attempt, _MAX_RETRIES, retry_after,
+            )
+            await asyncio.sleep(retry_after)
+
+        # Exhausted retries — raise the last 429 so caller can handle it
+        resp.raise_for_status()
+        return resp  # unreachable, but keeps type checker happy
+
+    # ── Chat Completion ──
+
     async def chat_completion(
         self,
         messages: list[dict],
@@ -85,9 +122,7 @@ class LLMProvider:
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+        resp = await self._post_with_retry(url, headers, payload)
 
         data = resp.json()
         logger.debug("LLM response: %s", json.dumps(data, ensure_ascii=False)[:500])
@@ -95,6 +130,8 @@ class LLMProvider:
         message = data.get("choices", [{}])[0].get("message", {})
         usage = data.get("usage")
         return message, usage
+
+    # ── Vision ──
 
     async def chat_completion_with_image(
         self,
@@ -130,9 +167,7 @@ class LLMProvider:
             "max_tokens": max_tokens,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+        resp = await self._post_with_retry(url, headers, payload)
 
         data = resp.json()
         logger.debug("LLM vision response: %s", json.dumps(data, ensure_ascii=False)[:500])
@@ -140,6 +175,8 @@ class LLMProvider:
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         usage = data.get("usage")
         return content, usage
+
+    # ── Embedding ──
 
     async def embed(self, text: str, model: str = "") -> Optional[list[float]]:
         """Generate an embedding vector via the /embeddings endpoint.
@@ -157,10 +194,7 @@ class LLMProvider:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
-
+            resp = await self._post_with_retry(url, headers, payload)
             data = resp.json()
             embedding = data.get("data", [{}])[0].get("embedding")
             if embedding and isinstance(embedding, list):
@@ -239,9 +273,7 @@ class MiniMaxProvider(LLMProvider):
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+        resp = await self._post_with_retry(url, headers, payload)
 
         data = resp.json()
         logger.debug("MiniMax response: %s", json.dumps(data, ensure_ascii=False)[:500])
@@ -280,9 +312,7 @@ class MiniMaxProvider(LLMProvider):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+        resp = await self._post_with_retry(url, headers, payload)
         data = resp.json()
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         usage = data.get("usage")
@@ -301,9 +331,7 @@ class MiniMaxProvider(LLMProvider):
             "type": "db",
         }
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
+            resp = await self._post_with_retry(url, headers, payload)
             data = resp.json()
             embedding = data.get("data", [{}])[0].get("embedding")
             if embedding and isinstance(embedding, list):
