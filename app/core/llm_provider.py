@@ -70,11 +70,15 @@ class LLMProvider:
 
     # ── HTTP helper with 429 rate-limit retry ──
 
+    # Retryable HTTP status codes
+    _RETRYABLE_STATUSES = {429, 503, 502, 500}
+
     async def _post_with_retry(
         self, url: str, headers: dict, payload: dict
     ) -> httpx.Response:
-        """POST with automatic retry on HTTP 429 (rate limit).
+        """POST with automatic retry on transient HTTP errors.
 
+        Retries on: 429 (rate limit), 503/502/500 (service unavailable).
         Gemini free tier = 15 RPM; this prevents the bot from crashing
         when two family members record expenses at the same time.
         """
@@ -82,19 +86,19 @@ class LLMProvider:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
 
-            if resp.status_code != 429:
+            if resp.status_code not in self._RETRYABLE_STATUSES:
                 resp.raise_for_status()
                 return resp
 
-            # 429 — parse Retry-After or use default wait
+            # Transient error — wait and retry
             retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
             logger.warning(
-                "[LLM] Rate limited (429), retry %d/%d after %ds",
-                attempt, _MAX_RETRIES, retry_after,
+                "[LLM] HTTP %d, retry %d/%d after %ds — %s",
+                resp.status_code, attempt, _MAX_RETRIES, retry_after, url,
             )
             await asyncio.sleep(retry_after)
 
-        # Exhausted retries — raise the last 429 so caller can handle it
+        # Exhausted retries — raise so caller can handle it
         resp.raise_for_status()
         return resp  # unreachable, but keeps type checker happy
 
