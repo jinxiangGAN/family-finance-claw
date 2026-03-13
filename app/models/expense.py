@@ -38,4 +38,5 @@ class ParsedExpense:
     amount: Optional[float] = None
     note: Optional[str] = None
     query_type: Optional[str] = None  # "monthly_total" | "category_total" | "summary"
+    scope: str = "me"  # "me" | "spouse" | "family"
     raw_text: str = ""

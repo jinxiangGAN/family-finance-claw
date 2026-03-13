@@ -20,6 +20,16 @@ DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/expenses.db")
 _allowed = os.getenv("ALLOWED_USER_IDS", "")
 ALLOWED_USER_IDS: list[int] = [int(uid.strip()) for uid in _allowed.split(",") if uid.strip()]
 
+# Family members: FAMILY_MEMBERS="user_id:显示名,user_id:显示名"
+# Example: FAMILY_MEMBERS="123456:老公,789012:老婆"
+_members_raw = os.getenv("FAMILY_MEMBERS", "")
+FAMILY_MEMBERS: dict[int, str] = {}
+for _m in _members_raw.split(","):
+    _m = _m.strip()
+    if ":" in _m:
+        _uid, _name = _m.split(":", 1)
+        FAMILY_MEMBERS[int(_uid.strip())] = _name.strip()
+
 # Timezone
 TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Singapore")
 
