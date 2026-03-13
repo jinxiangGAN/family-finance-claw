@@ -2,10 +2,14 @@
 
 Supports: MiniMax, OpenAI, DeepSeek, Qwen, and any OpenAI-compatible endpoint.
 Switch providers by changing LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env.
+
+v4: Added embed() for vector memory support.
 """
 
 import json
 import logging
+import math
+import struct
 from typing import Optional
 
 import httpx
@@ -13,8 +17,39 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# ═══════════════════════════════════════════
+#  Pure-Python vector utilities (no numpy)
+# ═══════════════════════════════════════════
+
+def pack_embedding(embedding: list[float]) -> bytes:
+    """Pack a float list into a compact binary BLOB (float32)."""
+    return struct.pack(f"{len(embedding)}f", *embedding)
+
+
+def unpack_embedding(data: bytes) -> list[float]:
+    """Unpack a binary BLOB back to a float list."""
+    count = len(data) // 4
+    return list(struct.unpack(f"{count}f", data))
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# ═══════════════════════════════════════════
+#  LLM Provider base class
+# ═══════════════════════════════════════════
+
 class LLMProvider:
-    """Unified LLM interface for chat completion with function calling."""
+    """Unified LLM interface for chat completion, vision, and embedding."""
 
     def __init__(
         self,
@@ -35,10 +70,7 @@ class LLMProvider:
         temperature: float = 0.3,
         max_tokens: int = 1024,
     ) -> tuple[dict, Optional[dict]]:
-        """Call chat completion API. Returns (message, usage).
-
-        Compatible with OpenAI, MiniMax, DeepSeek, Qwen API formats.
-        """
+        """Call chat completion API. Returns (message, usage)."""
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -72,10 +104,7 @@ class LLMProvider:
         temperature: float = 0.3,
         max_tokens: int = 1024,
     ) -> tuple[str, Optional[dict]]:
-        """Call vision-capable chat completion with an image.
-
-        Returns (content_text, usage).
-        """
+        """Call vision-capable chat completion with an image."""
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -112,6 +141,36 @@ class LLMProvider:
         usage = data.get("usage")
         return content, usage
 
+    async def embed(self, text: str, model: str = "") -> Optional[list[float]]:
+        """Generate an embedding vector via the /embeddings endpoint.
+
+        Returns None if the API call fails (caller should fall back to FTS5).
+        """
+        url = f"{self.base_url}/embeddings"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model or self.model,
+            "input": text,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+
+            data = resp.json()
+            embedding = data.get("data", [{}])[0].get("embedding")
+            if embedding and isinstance(embedding, list):
+                logger.debug("Embedding generated: dim=%d", len(embedding))
+                return embedding
+        except Exception:
+            logger.debug("Embedding API call failed, will use FTS5 fallback", exc_info=True)
+
+        return None
+
 
 # ─────────────── Provider presets ───────────────
 
@@ -120,28 +179,32 @@ PROVIDER_PRESETS: dict[str, dict] = {
         "base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o-mini",
         "vision_model": "gpt-4o",
+        "embedding_model": "text-embedding-3-small",
     },
     "minimax": {
         "base_url": "https://api.minimax.chat/v1/text",
         "default_model": "abab6.5s-chat",
         "vision_model": "abab6.5s-chat",
-        # MiniMax uses a slightly different endpoint
+        "embedding_model": "embo-01",
         "chat_endpoint": "chatcompletion_v2",
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1",
         "default_model": "deepseek-chat",
         "vision_model": "deepseek-chat",
+        "embedding_model": "",  # Not available — use FTS5
     },
     "qwen": {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "default_model": "qwen-plus",
         "vision_model": "qwen-vl-plus",
+        "embedding_model": "text-embedding-v3",
     },
     "custom": {
         "base_url": "",
         "default_model": "",
         "vision_model": "",
+        "embedding_model": "",
     },
 }
 
@@ -218,6 +281,31 @@ class MiniMaxProvider(LLMProvider):
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         usage = data.get("usage")
         return content, usage
+
+    async def embed(self, text: str, model: str = "") -> Optional[list[float]]:
+        """MiniMax embedding endpoint."""
+        url = f"{self.base_url}/embeddings"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model or "embo-01",
+            "input": text,
+            "type": "db",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+            data = resp.json()
+            embedding = data.get("data", [{}])[0].get("embedding")
+            if embedding and isinstance(embedding, list):
+                logger.debug("MiniMax embedding: dim=%d", len(embedding))
+                return embedding
+        except Exception:
+            logger.debug("MiniMax embedding failed", exc_info=True)
+        return None
 
 
 def create_provider(

@@ -1,11 +1,12 @@
-"""LLM Agent v3: Memory-augmented, session-aware, MCP-powered.
+"""LLM Agent v4: 3-tier memory + dynamic prompt factory + session-aware.
 
-Flow:
-1. User message → build session context
-2. Recall relevant memories → inject into system prompt
-3. LLM call with MCP tools → execute tool calls
-4. Post-interaction reflection → store new memories if needed
-5. Return final reply (tone adapted to private/group chat)
+Architecture (inspired by OpenClaw):
+  1. User message → Session tracking (working memory + persona)
+  2. MemoryManager.assemble_memory_context → Tier 1/2/3 recall
+  3. PromptBuilder.build → modular system prompt assembly
+  4. LLM call with MCP tools → execute tool calls
+  5. Post-turn: update working memory buffer
+  6. Return final reply (tone adapted to private/group chat)
 """
 
 import json
@@ -14,54 +15,32 @@ import re
 from typing import Optional
 
 from app.api_tracker import is_within_limit, record_usage
-from app.config import CURRENCY, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROVIDER, LLM_VISION_MODEL
-from app.llm_provider import create_provider
+from app.config import (
+    CURRENCY,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_EMBEDDING_MODEL,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    LLM_VISION_MODEL,
+    MEMORY_RECALL_TOP_K,
+)
+from app.llm_provider import PROVIDER_PRESETS, create_provider
 from app.mcp_tools.registry import execute_tool, get_all_tools
-from app.memory import format_memories_for_prompt, recall_memories, store_memory
-from app.session import Session, build_system_prompt_for_session
-from app.skills import execute_skill  # fallback still uses skills directly
+from app.memory import MemoryManager, set_memory_manager
+from app.prompt_builder import VISION_PROMPT, PromptBuilder
+from app.session import Session
 
 logger = logging.getLogger(__name__)
 
-BASE_SYSTEM_PROMPT = f"""你是一个家庭记账助手机器人。这个家庭有两个人（夫妻）。
-默认货币是 {CURRENCY}。
+# ═══════════════════════════════════════════
+#  Singleton initialization
+# ═══════════════════════════════════════════
 
-你可以帮助用户：
-1. 记录日常支出（record_expense），支持多币种
-2. 查询支出（query_monthly_total / query_category_total / query_summary）
-3. 预算管理（set_budget / query_budget）
-4. 消费分析与财务建议（get_spending_analysis）
-5. 删除误记（delete_last_expense）
-6. 事件/旅行标签（start_event / stop_event / query_event_summary）
-7. 导出CSV（export_csv）
-8. 长期记忆（store_memory / recall_memories / forget_memory）
-
-重要：
-- 用简洁友好的中文回复
-- 金额后面带货币单位
-- 如果用户用非 {CURRENCY} 货币记账，回复中提示已自动折算
-- 如果 skill 返回了 budget_alert，一定要在回复中提醒用户
-- 如果用户的消息包含多笔消费，每笔都分别调用 record_expense
-
-记忆规则：
-- 当用户表达偏好（如"我不喜欢在外面吃"）、设定目标（如"这个月减少打车"）、做出家庭决定（如"下个月开始存钱"）时，主动调用 store_memory
-- 当用户的消息涉及过去讨论的话题时，可以调用 recall_memories 检索相关记忆
-- 回复中自然地引用记忆，不要刻意强调"我的记忆显示..."
-"""
-
-VISION_PROMPT = f"""你是一个 OCR 助手。请识别这张图片中的消费信息。
-
-提取以下信息并返回严格的 JSON（不要包含其他文字）：
-[{{"category": "分类", "amount": 金额, "note": "备注", "currency": "货币代码"}}]
-
-可选分类：餐饮、交通、购物、娱乐、生活、医疗、其他
-默认货币：{CURRENCY}
-如果无法识别，返回：[{{"error": "无法识别"}}]
-"""
-
-# Lazy-init providers
 _provider = None
 _vision_provider = None
+_memory_manager: Optional[MemoryManager] = None
+_prompt_builder: Optional[PromptBuilder] = None
 
 
 def _get_provider():
@@ -77,6 +56,33 @@ def _get_vision_provider():
         vision_model = LLM_VISION_MODEL or LLM_MODEL
         _vision_provider = create_provider(LLM_PROVIDER, LLM_API_KEY, vision_model, LLM_BASE_URL)
     return _vision_provider
+
+
+def _get_memory_manager() -> MemoryManager:
+    """Get or initialize the global MemoryManager with embedding support."""
+    global _memory_manager
+    if _memory_manager is None:
+        provider = _get_provider()
+        # Determine embedding model
+        embedding_model = LLM_EMBEDDING_MODEL
+        if not embedding_model:
+            preset = PROVIDER_PRESETS.get(LLM_PROVIDER, {})
+            embedding_model = preset.get("embedding_model", "")
+        _memory_manager = MemoryManager(provider=provider, embedding_model=embedding_model)
+        set_memory_manager(_memory_manager)  # register globally for legacy code paths
+        logger.info(
+            "MemoryManager initialized (provider=%s, embedding=%s)",
+            LLM_PROVIDER if provider else "none",
+            embedding_model or "FTS5-only",
+        )
+    return _memory_manager
+
+
+def _get_prompt_builder() -> PromptBuilder:
+    global _prompt_builder
+    if _prompt_builder is None:
+        _prompt_builder = PromptBuilder()
+    return _prompt_builder
 
 
 # ═══════════════════════════════════════════
@@ -104,29 +110,50 @@ async def _llm_agent_loop(text: str, user_id: int, user_name: str, session: Sess
     if provider is None:
         return _fallback_handle(text, user_id, user_name)
 
-    # Step 1: Recall relevant memories
-    memories = recall_memories(user_id, text, limit=5)
-    memories_text = format_memories_for_prompt(memories)
+    mm = _get_memory_manager()
+    builder = _get_prompt_builder()
 
-    # Step 2: Build session-aware system prompt
-    system_prompt = build_system_prompt_for_session(session, BASE_SYSTEM_PROMPT, memories_text)
+    # Step 1: Assemble memory context (all 3 tiers)
+    memory_context = await mm.assemble_memory_context(user_id, text)
 
-    # Step 3: Get all MCP tools
+    # Step 2: Build dynamic system prompt
+    system_prompt = builder.build(
+        user_id=user_id,
+        is_private=session.is_private,
+        memory_context=memory_context,
+    )
+
+    # Step 3: Build messages (include working memory as conversation history)
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Inject working memory turns for multi-turn coherence
+    wm = mm.get_working_memory(user_id)
+    for past_msg in wm.get_messages():
+        messages.append(past_msg)
+
+    # Current user message
+    messages.append({"role": "user", "content": text})
+
+    # Step 4: Get MCP tools & call LLM
     tools = get_all_tools()
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": text},
-    ]
-
-    # Step 4: LLM call
     resp_msg, usage = await provider.chat_completion(messages, tools=tools)
     if usage:
-        record_usage(user_id, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), usage.get("total_tokens", 0), LLM_MODEL)
+        record_usage(
+            user_id,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+            usage.get("total_tokens", 0),
+            LLM_MODEL,
+        )
 
     tool_calls = resp_msg.get("tool_calls")
     if not tool_calls:
-        return resp_msg.get("content", "🤔 我没有理解你的意思，请输入 /help 查看帮助。")
+        reply = resp_msg.get("content", "🤔 我没有理解你的意思，请输入 /help 查看帮助。")
+        # Update working memory
+        mm.add_working_turn(user_id, "user", text)
+        mm.add_working_turn(user_id, "assistant", reply)
+        return reply
 
     # Step 5: Execute tool calls (via MCP registry)
     messages.append(resp_msg)
@@ -151,9 +178,21 @@ async def _llm_agent_loop(text: str, user_id: int, user_name: str, session: Sess
     # Step 6: Final LLM call for human-readable reply
     final_msg, usage2 = await provider.chat_completion(messages, tools=tools)
     if usage2:
-        record_usage(user_id, usage2.get("prompt_tokens", 0), usage2.get("completion_tokens", 0), usage2.get("total_tokens", 0), LLM_MODEL)
+        record_usage(
+            user_id,
+            usage2.get("prompt_tokens", 0),
+            usage2.get("completion_tokens", 0),
+            usage2.get("total_tokens", 0),
+            LLM_MODEL,
+        )
 
-    return final_msg.get("content", "操作完成。")
+    reply = final_msg.get("content", "操作完成。")
+
+    # Step 7: Update working memory buffer
+    mm.add_working_turn(user_id, "user", text)
+    mm.add_working_turn(user_id, "assistant", reply)
+
+    return reply
 
 
 # ═══════════════════════════════════════════
@@ -172,14 +211,23 @@ async def agent_handle_image(
         return "📷 Vision 模型未配置，无法识别收据。"
 
     try:
+        builder = _get_prompt_builder()
+        vision_prompt = builder.build_vision()
         prompt = caption.strip() if caption else "请识别这张图片中的消费信息"
+
         content, usage = await vision.chat_completion_with_image(
             text=prompt,
             image_url=image_url,
-            system_prompt=VISION_PROMPT,
+            system_prompt=vision_prompt,
         )
         if usage:
-            record_usage(user_id, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), usage.get("total_tokens", 0), LLM_MODEL)
+            record_usage(
+                user_id,
+                usage.get("prompt_tokens", 0),
+                usage.get("completion_tokens", 0),
+                usage.get("total_tokens", 0),
+                LLM_MODEL,
+            )
 
         content = content.strip()
         if content.startswith("```"):
@@ -264,7 +312,7 @@ def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
         scope = "family" if any(k in text for k in ("家庭", "总", "一共")) else "me"
         if any(k in text for k in ("老婆", "老公", "妻子", "丈夫")):
             scope = "spouse"
-        result = execute_skill("query_summary", user_id, user_name, {"scope": scope})
+        result = execute_tool("query_summary", user_id, user_name, {"scope": scope})
         return _format_summary(result)
 
     if "花了多少" in text:
@@ -280,16 +328,16 @@ def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
                 cat = c
                 break
         if cat:
-            result = execute_skill("query_category_total", user_id, user_name, {"category": cat, "scope": scope})
+            result = execute_tool("query_category_total", user_id, user_name, {"category": cat, "scope": scope})
             return f"📊 {result['label']}本月{result['category']}支出：{result['total']:.2f} {CURRENCY}"
         else:
-            result = execute_skill("query_monthly_total", user_id, user_name, {"scope": scope})
+            result = execute_tool("query_monthly_total", user_id, user_name, {"scope": scope})
             return f"📊 {result['label']}本月总支出：{result['total']:.2f} {CURRENCY}"
 
     if "预算" in text:
         if any(k in text for k in ("设", "改", "调")):
             return "⚠️ 设置预算请在 LLM 可用时使用，或使用 /help 查看帮助。"
-        result = execute_skill("query_budget", user_id, user_name, {})
+        result = execute_tool("query_budget", user_id, user_name, {})
         return _format_budget(result)
 
     m = _EXPENSE_RE.match(text)
@@ -297,8 +345,8 @@ def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
         note = m.group(1).strip()
         amount = float(m.group(2))
         category = _guess_category(note)
-        result = execute_skill("record_expense", user_id, user_name, {
-            "category": category, "amount": amount, "note": note
+        result = execute_tool("record_expense", user_id, user_name, {
+            "category": category, "amount": amount, "note": note,
         })
         reply = f"✅ 已记录\n{result['category']}  {result['amount']:.2f} {CURRENCY}"
         if result.get("note"):

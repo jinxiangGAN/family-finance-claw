@@ -3,7 +3,7 @@
 import logging
 import sys
 
-from app.config import LLM_API_KEY, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
+from app.config import LLM_API_KEY, LLM_EMBEDDING_MODEL, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
 from app.database import init_db
 from app.telegram_bot import build_application
 
@@ -24,12 +24,16 @@ def main() -> None:
         logger.warning("LLM_API_KEY is not set. Will use regex fallback only.")
     else:
         logger.info("LLM provider: %s", LLM_PROVIDER)
+        if LLM_EMBEDDING_MODEL:
+            logger.info("Embedding model: %s (vector memory enabled)", LLM_EMBEDDING_MODEL)
+        else:
+            logger.info("No embedding model configured — using FTS5 for memory recall")
 
-    # Initialize database
+    # Initialize database (creates 3-tier memory tables)
     init_db()
 
     # Build and run bot (polling mode)
-    logger.info("Starting Family Finance Bot (polling mode)...")
+    logger.info("Starting Family Finance Bot v4 (polling mode)...")
     app = build_application()
     app.run_polling(drop_pending_updates=True)
 

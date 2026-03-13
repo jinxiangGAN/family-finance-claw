@@ -1,4 +1,10 @@
-"""SQLite database initialization and connection management."""
+"""SQLite database initialization and connection management.
+
+Memory tables follow a 3-tier architecture:
+  - core_profiles: persistent user profiles & financial goals
+  - episodic_memories: important events with optional vector embedding
+  - memories_fts: FTS5 index for text-based recall
+"""
 
 import logging
 import os
@@ -11,7 +17,7 @@ from app.config import DATABASE_PATH
 logger = logging.getLogger(__name__)
 
 CREATE_TABLES_SQL = [
-    # Expenses table (with currency and event tag)
+    # ── Core business tables ──
     """
     CREATE TABLE IF NOT EXISTS expenses (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +32,6 @@ CREATE_TABLES_SQL = [
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     """,
-    # Budgets table
     """
     CREATE TABLE IF NOT EXISTS budgets (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +42,6 @@ CREATE_TABLES_SQL = [
         UNIQUE(user_id, category)
     );
     """,
-    # API usage tracking table
     """
     CREATE TABLE IF NOT EXISTS api_usage (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +53,6 @@ CREATE_TABLES_SQL = [
         created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     """,
-    # Event tags table
     """
     CREATE TABLE IF NOT EXISTS events (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +64,36 @@ CREATE_TABLES_SQL = [
         UNIQUE(user_id, tag)
     );
     """,
-    # Semantic memory table
+
+    # ── Memory Layer: Tier 1 — Core Profile ──
+    # Persistent user profile: financial goals, preferences, personality traits.
+    # One row per (user_id, key). Updated in-place via UPSERT.
+    """
+    CREATE TABLE IF NOT EXISTS core_profiles (
+        user_id     INTEGER NOT NULL,
+        key         TEXT    NOT NULL,
+        value       TEXT    NOT NULL DEFAULT '',
+        updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, key)
+    );
+    """,
+
+    # ── Memory Layer: Tier 3 — Episodic Memory ──
+    # Important events, decisions, spending patterns from past conversations.
+    # Optional embedding BLOB for vector search (struct-packed float32 array).
+    """
+    CREATE TABLE IF NOT EXISTS episodic_memories (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        content     TEXT    NOT NULL,
+        category    TEXT    NOT NULL DEFAULT 'general',
+        importance  INTEGER NOT NULL DEFAULT 5,
+        embedding   BLOB,
+        created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+
+    # Legacy flat memories table (kept for backward compat migration)
     """
     CREATE TABLE IF NOT EXISTS memories (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,11 +106,13 @@ CREATE_TABLES_SQL = [
     """,
 ]
 
-# FTS5 virtual table (created separately as it needs special handling)
-CREATE_FTS_SQL = """
-    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-    USING fts5(content, content_rowid='rowid');
-"""
+# FTS5 virtual tables
+CREATE_FTS_SQL = [
+    """CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+       USING fts5(content, content_rowid='rowid');""",
+    """CREATE VIRTUAL TABLE IF NOT EXISTS episodic_fts
+       USING fts5(content, content_rowid='rowid');""",
+]
 
 CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_expenses_user_id    ON expenses(user_id);",
@@ -91,9 +125,13 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_memories_user_id    ON memories(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_memories_category   ON memories(category);",
     "CREATE INDEX IF NOT EXISTS idx_memories_importance  ON memories(importance);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_user_id    ON episodic_memories(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_category   ON episodic_memories(category);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_importance  ON episodic_memories(importance);",
+    "CREATE INDEX IF NOT EXISTS idx_core_profiles_user  ON core_profiles(user_id);",
 ]
 
-# Migration: add new columns to existing databases
+# Migrations (idempotent, errors silenced)
 MIGRATIONS = [
     "ALTER TABLE expenses ADD COLUMN currency TEXT NOT NULL DEFAULT 'SGD';",
     "ALTER TABLE expenses ADD COLUMN amount_sgd REAL NOT NULL DEFAULT 0;",
@@ -102,7 +140,7 @@ MIGRATIONS = [
 
 
 def init_db() -> None:
-    """Create the database file, tables, and indexes if they don't exist."""
+    """Create the database file, tables, indexes, and FTS virtual tables."""
     db_dir = os.path.dirname(DATABASE_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
@@ -110,21 +148,44 @@ def init_db() -> None:
     with get_connection() as conn:
         for table_sql in CREATE_TABLES_SQL:
             conn.execute(table_sql)
-        # FTS5 virtual table (separate handling)
-        try:
-            conn.execute(CREATE_FTS_SQL)
-        except sqlite3.OperationalError:
-            pass  # May already exist
+        for fts_sql in CREATE_FTS_SQL:
+            try:
+                conn.execute(fts_sql)
+            except sqlite3.OperationalError:
+                pass
         for idx_sql in CREATE_INDEX_SQL:
             conn.execute(idx_sql)
-        # Run migrations (ignore errors for already-applied)
         for migration in MIGRATIONS:
             try:
                 conn.execute(migration)
             except sqlite3.OperationalError:
-                pass  # Column already exists
+                pass
+        # Migrate legacy memories → episodic_memories
+        _migrate_legacy_memories(conn)
         conn.commit()
     logger.info("Database initialized at %s", DATABASE_PATH)
+
+
+def _migrate_legacy_memories(conn: sqlite3.Connection) -> None:
+    """One-time migration: copy old memories into episodic_memories if needed."""
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        ep_count = conn.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0]
+        if count > 0 and ep_count == 0:
+            conn.execute(
+                "INSERT INTO episodic_memories (user_id, content, category, importance, created_at) "
+                "SELECT user_id, content, category, importance, created_at FROM memories"
+            )
+            # Also populate episodic FTS
+            rows = conn.execute("SELECT id, content FROM episodic_memories").fetchall()
+            for r in rows:
+                try:
+                    conn.execute("INSERT INTO episodic_fts (rowid, content) VALUES (?, ?)", (r["id"], r["content"]))
+                except Exception:
+                    pass
+            logger.info("Migrated %d legacy memories to episodic_memories", count)
+    except Exception:
+        pass
 
 
 @contextmanager

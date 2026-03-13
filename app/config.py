@@ -16,6 +16,9 @@ LLM_MODEL: str = os.getenv("LLM_MODEL", "") or os.getenv("MINIMAX_MODEL", "abab6
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 # Vision model (for receipt OCR) — defaults to same as LLM_MODEL
 LLM_VISION_MODEL: str = os.getenv("LLM_VISION_MODEL", "")
+# Embedding model — for semantic memory vector search
+# Leave empty to use FTS5 fallback (no embedding API call)
+LLM_EMBEDDING_MODEL: str = os.getenv("LLM_EMBEDDING_MODEL", "")
 
 # Backward compat
 MINIMAX_API_KEY: str = LLM_API_KEY
@@ -40,8 +43,9 @@ for _m in _members_raw.split(","):
         _uid, _name = _m.split(":", 1)
         FAMILY_MEMBERS[int(_uid.strip())] = _name.strip()
 
-# Timezone
+# Timezone & Location
 TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Singapore")
+LOCATION: str = os.getenv("LOCATION", "Singapore")
 
 # Currency (default display currency)
 CURRENCY: str = os.getenv("CURRENCY", "SGD")
@@ -52,3 +56,7 @@ CATEGORIES: list[str] = ["餐饮", "交通", "购物", "娱乐", "生活", "医�
 # Weekly summary: day of week (0=Monday, 6=Sunday)
 WEEKLY_SUMMARY_DAY: int = int(os.getenv("WEEKLY_SUMMARY_DAY", "6"))
 WEEKLY_SUMMARY_HOUR: int = int(os.getenv("WEEKLY_SUMMARY_HOUR", "20"))
+
+# Memory settings
+MEMORY_MAX_WORKING: int = int(os.getenv("MEMORY_MAX_WORKING", "10"))  # max conversation turns
+MEMORY_RECALL_TOP_K: int = int(os.getenv("MEMORY_RECALL_TOP_K", "3"))  # top-K episodic recall
