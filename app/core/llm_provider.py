@@ -95,12 +95,16 @@ class LLMProvider:
     _RETRYABLE_STATUSES = {429, 503, 502, 500}
 
     async def _post_with_retry(
-        self, url: str, headers: dict, payload: dict
+        self, url: str, headers: dict, payload: dict,
+        *, pinned: bool = False,
     ) -> httpx.Response:
         """POST with automatic retry on transient HTTP errors.
 
         - 429 (rate limit): rotate to next model instantly (no wait).
         - 503/502/500 (server error): wait and retry same model.
+        - *pinned*=True: model is locked for a tool chain — on 429, wait
+          and retry the SAME model instead of rotating (avoids cross-model
+          thought_signature incompatibility).
         """
         for attempt in range(1, _MAX_RETRIES + 1):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -111,6 +115,7 @@ class LLMProvider:
                 resp.status_code == 400
                 and len(self._models) > 1
                 and attempt < _MAX_RETRIES
+                and not pinned
             ):
                 body = resp.text[:500]
                 # Gemma / other models may not support function calling or vision;
@@ -138,7 +143,7 @@ class LLMProvider:
                 resp.raise_for_status()
                 return resp
 
-            if resp.status_code == 429 and len(self._models) > 1:
+            if resp.status_code == 429 and len(self._models) > 1 and not pinned:
                 # Rate limited — rotate model and retry instantly
                 next_m = self._next_model()
                 # Skip if same model came up in rotation
@@ -151,11 +156,12 @@ class LLMProvider:
                 payload["model"] = next_m
                 # No sleep — different model has its own quota
             else:
-                # 503/502/500 or 429 with single model — wait and retry
+                # 503/502/500, or 429 with single model / pinned mode — wait and retry same model
                 retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_WAIT))
                 logger.warning(
-                    "[LLM] HTTP %d on %s, retry %d/%d after %ds",
+                    "[LLM] HTTP %d on %s%s, retry %d/%d after %ds",
                     resp.status_code, payload.get("model", "?"),
+                    " (pinned)" if pinned else "",
                     attempt, _MAX_RETRIES, retry_after,
                 )
                 await asyncio.sleep(retry_after)
@@ -191,7 +197,7 @@ class LLMProvider:
         if tools:
             payload["tools"] = tools
 
-        resp = await self._post_with_retry(url, headers, payload)
+        resp = await self._post_with_retry(url, headers, payload, pinned=model is not None)
 
         # payload["model"] may have changed during retry/rotation
         model_used = payload["model"]
