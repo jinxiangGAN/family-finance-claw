@@ -180,7 +180,11 @@ def skill_query_summary(user_id: int, user_name: str, params: dict) -> dict:
 
 
 def skill_set_budget(user_id: int, user_name: str, params: dict) -> dict:
-    """Set a monthly budget for a category or total."""
+    """Set a family-shared monthly budget for a category or total.
+
+    Budgets are stored with user_id=0 (family-shared).
+    Spending is tracked as the sum of ALL family members.
+    """
     category = params.get("category", "_total")
     amount = float(params.get("amount", 0))
     if amount <= 0:
@@ -189,15 +193,16 @@ def skill_set_budget(user_id: int, user_name: str, params: dict) -> dict:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
     with get_connection() as conn:
+        # user_id=0 → family-shared budget
         conn.execute(
             "INSERT INTO budgets (user_id, category, monthly_limit, updated_at) "
-            "VALUES (?, ?, ?, ?) "
+            "VALUES (0, ?, ?, ?) "
             "ON CONFLICT(user_id, category) DO UPDATE SET monthly_limit = ?, updated_at = ?",
-            (user_id, category, amount, now.isoformat(), amount, now.isoformat()),
+            (category, amount, now.isoformat(), amount, now.isoformat()),
         )
         conn.commit()
 
-    cat_label = "个人总预算" if category == "_total" else f"{category}预算"
+    cat_label = "家庭总预算" if category == "_total" else f"家庭{category}预算"
     return {
         "success": True,
         "message": f"已设置{cat_label}：{amount:.2f} {CURRENCY}/月",
@@ -208,26 +213,30 @@ def skill_set_budget(user_id: int, user_name: str, params: dict) -> dict:
 
 
 def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
-    """Query budget status."""
+    """Query family-shared budget status.
+
+    Budgets are stored with user_id=0.
+    Spending is the sum of ALL family members (scope=family).
+    """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT category, monthly_limit FROM budgets WHERE user_id = ?",
-            (user_id,),
+            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
         ).fetchall()
 
     if not rows:
         return {"success": True, "budgets": [], "message": "尚未设置任何预算"}
 
+    # Family-wide spending (None = all users)
     budgets = []
     for row in rows:
         cat = row["category"]
         limit_val = float(row["monthly_limit"])
         if cat == "_total":
-            spent = get_month_total([user_id])
-            cat_label = "个人总计"
+            spent = get_month_total(None)  # None = all family members
+            cat_label = "家庭总计"
         else:
-            spent = get_category_total(cat, [user_id])
-            cat_label = cat
+            spent = get_category_total(cat, None)
+            cat_label = f"家庭{cat}"
         remaining = limit_val - spent
         budgets.append({
             "category": cat_label,
@@ -284,14 +293,14 @@ def skill_start_event(user_id: int, user_name: str, params: dict) -> dict:
     now = datetime.now(tz)
     with get_connection() as conn:
         for uid in member_ids:
-            # Deactivate all other events first
+        # Deactivate all other events first
             conn.execute("UPDATE events SET is_active = 0 WHERE user_id = ?", (uid,))
-            conn.execute(
-                "INSERT INTO events (user_id, tag, description, is_active, created_at) "
-                "VALUES (?, ?, ?, 1, ?) "
-                "ON CONFLICT(user_id, tag) DO UPDATE SET is_active = 1, description = ?, created_at = ?",
+        conn.execute(
+            "INSERT INTO events (user_id, tag, description, is_active, created_at) "
+            "VALUES (?, ?, ?, 1, ?) "
+            "ON CONFLICT(user_id, tag) DO UPDATE SET is_active = 1, description = ?, created_at = ?",
                 (uid, tag, description, now.isoformat(), description, now.isoformat()),
-            )
+        )
         conn.commit()
 
     return {"success": True, "message": f"已为全家开启事件标签「{tag}」，后续记账将自动标记", "tag": tag}
@@ -584,31 +593,31 @@ def _get_active_event(user_id: int) -> str:
 
 
 def _check_budget_alert(user_id: int, category: str) -> Optional[str]:
+    """Check family-shared budgets (user_id=0) against family-wide spending."""
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT monthly_limit FROM budgets WHERE user_id = ? AND category = ?",
-            (user_id, category),
+            "SELECT monthly_limit FROM budgets WHERE user_id = 0 AND category = ?",
+            (category,),
         ).fetchone()
         alerts = []
         if row:
             limit_val = float(row["monthly_limit"])
-            spent = get_category_total(category, [user_id])
+            spent = get_category_total(category, None)  # family total
             if spent > limit_val:
-                alerts.append(f"⚠️ {category}已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
+                alerts.append(f"⚠️ 家庭{category}已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
             elif spent > limit_val * 0.8:
-                alerts.append(f"⚡ {category}已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
+                alerts.append(f"⚡ 家庭{category}已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
 
         row = conn.execute(
-            "SELECT monthly_limit FROM budgets WHERE user_id = ? AND category = '_total'",
-            (user_id,),
+            "SELECT monthly_limit FROM budgets WHERE user_id = 0 AND category = '_total'",
         ).fetchone()
         if row:
             limit_val = float(row["monthly_limit"])
-            spent = get_month_total([user_id])
+            spent = get_month_total(None)  # family total
             if spent > limit_val:
-                alerts.append(f"⚠️ 个人总支出已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
+                alerts.append(f"⚠️ 家庭总支出已超出预算！({spent:.2f}/{limit_val:.2f} {CURRENCY})")
             elif spent > limit_val * 0.8:
-                alerts.append(f"⚡ 个人总支出已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
+                alerts.append(f"⚡ 家庭总支出已用预算 {spent/limit_val*100:.0f}%（{spent:.2f}/{limit_val:.2f} {CURRENCY}）")
 
     return "\n".join(alerts) if alerts else None
 

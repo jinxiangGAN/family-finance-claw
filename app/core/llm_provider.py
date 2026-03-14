@@ -106,6 +106,26 @@ class LLMProvider:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, headers=headers, json=payload)
 
+            # ── Handle 400 "model doesn't support X" → rotate model ──
+            if (
+                resp.status_code == 400
+                and len(self._models) > 1
+                and attempt < _MAX_RETRIES
+            ):
+                body = resp.text[:500]
+                # Gemma / other models may not support function calling or vision
+                if "not enabled" in body or "not supported" in body:
+                    next_m = self._next_model()
+                    if next_m == payload.get("model") and len(self._models) > 2:
+                        next_m = self._next_model()
+                    logger.warning(
+                        "[LLM] 400 capability error on %s → rotating to %s (%d/%d): %s",
+                        payload.get("model", "?"), next_m, attempt, _MAX_RETRIES,
+                        body[:120],
+                    )
+                    payload["model"] = next_m
+                    continue  # retry with capable model
+
             if resp.status_code not in self._RETRYABLE_STATUSES:
                 if resp.status_code >= 400:
                     # Log error body for debugging (400, 401, 403, 404, etc.)

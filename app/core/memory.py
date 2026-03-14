@@ -117,48 +117,46 @@ class MemoryManager:
         # Per-(user, chat) working memory — isolates private vs group context
         self._working: dict[tuple[int, int], WorkingMemory] = defaultdict(WorkingMemory)
 
-    # ─── Tier 1: Core Profile ───
+    # ─── Tier 1: Core Profile (family-shared, user_id=0) ───
 
     def load_profile(self, user_id: int) -> CoreProfile:
-        """Load persistent profile from DB."""
+        """Load family-shared profile from DB (user_id=0)."""
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT key, value FROM core_profiles WHERE user_id = ?",
-                (user_id,),
+                "SELECT key, value FROM core_profiles WHERE user_id = 0",
             ).fetchall()
         data = {r["key"]: r["value"] for r in rows}
-        return CoreProfile(user_id=user_id, data=data)
+        return CoreProfile(user_id=0, data=data)
 
     def update_profile(self, user_id: int, key: str, value: str) -> None:
-        """Upsert a core profile entry."""
+        """Upsert a family-shared profile entry (stored as user_id=0)."""
         tz = ZoneInfo(TIMEZONE)
         now = datetime.now(tz).isoformat()
         with get_connection() as conn:
             conn.execute(
                 "INSERT INTO core_profiles (user_id, key, value, updated_at) "
-                "VALUES (?, ?, ?, ?) "
+                "VALUES (0, ?, ?, ?) "
                 "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (user_id, key, value, now),
+                (key, value, now),
             )
             conn.commit()
-        logger.info("Profile updated: user=%d key=%s value=%s", user_id, key, value[:60])
+        logger.info("Family profile updated: key=%s value=%s", key, value[:60])
 
     def delete_profile_key(self, user_id: int, key: str) -> bool:
-        """Delete a profile entry."""
+        """Delete a family-shared profile entry."""
         with get_connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM core_profiles WHERE user_id = ? AND key = ?",
-                (user_id, key),
+                "DELETE FROM core_profiles WHERE user_id = 0 AND key = ?",
+                (key,),
             )
             conn.commit()
         return cursor.rowcount > 0
 
     def get_all_profile_keys(self, user_id: int) -> list[dict]:
-        """List all profile keys for a user."""
+        """List all family-shared profile keys."""
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT key, value, updated_at FROM core_profiles WHERE user_id = ? ORDER BY key",
-                (user_id,),
+                "SELECT key, value, updated_at FROM core_profiles WHERE user_id = 0 ORDER BY key",
             ).fetchall()
         return [{"key": r["key"], "value": r["value"], "updated_at": r["updated_at"]} for r in rows]
 

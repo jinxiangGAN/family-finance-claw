@@ -58,12 +58,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_budget",
-            "description": "Set a monthly budget limit for a specific category. Use category '_total' for the overall monthly budget.",
+            "description": "设置家庭共享月度预算上限。预算对全家生效，支出按全家合计计算。category 为 '_total' 表示家庭总预算。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "Budget category. Use '_total' for the overall budget."},
-                    "amount": {"type": "number", "description": "Monthly budget limit amount"},
+                    "category": {"type": "string", "description": "预算分类。'_total' 表示家庭总预算，其他如 '餐饮'、'交通' 等"},
+                    "amount": {"type": "number", "description": "每月预算金额"},
                 },
                 "required": ["category", "amount"],
             },
@@ -73,7 +73,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "query_budget",
-            "description": "Query the current budget utilization across all categories.",
+            "description": "查询家庭预算使用情况。预算是全家共享的，支出按全家合计。",
             "parameters": {"type": "object", "properties": {}},
         },
     },

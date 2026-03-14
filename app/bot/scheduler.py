@@ -86,25 +86,24 @@ def _build_weekly_report(user_id: int) -> str:
     # Family total
     lines.append(f"\n👨‍👩‍👧 *家庭合计*：{family_total:.2f} {CURRENCY}")
 
-    # Budget check
+    # Budget check (family-shared: user_id=0)
     from app.database import get_connection
     with get_connection() as conn:
         budget_rows = conn.execute(
-            "SELECT category, monthly_limit FROM budgets WHERE user_id = ?",
-            (user_id,),
+            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
         ).fetchall()
 
     if budget_rows:
-        lines.append("\n📋 *预算情况*")
+        lines.append("\n📋 *家庭预算情况*")
         for row in budget_rows:
             cat = row["category"]
             limit_val = float(row["monthly_limit"])
             if cat == "_total":
-                spent = get_month_total([user_id])
-                cat_label = "个人总计"
+                spent = get_month_total(None)  # family total
+                cat_label = "家庭总计"
             else:
-                spent = get_category_total(cat, [user_id])
-                cat_label = cat
+                spent = get_category_total(cat, None)
+                cat_label = f"家庭{cat}"
             pct = spent / limit_val * 100 if limit_val > 0 else 0
             status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
             lines.append(f"  {status} {cat_label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
@@ -152,12 +151,11 @@ def _build_proactive_nudge(user_id: int) -> str:
     my_summary = get_month_summary([user_id])
     my_total = sum(item["total"] for item in my_summary)
 
-    # Check budget status
+    # Check budget status (family-shared: user_id=0)
     from app.database import get_connection
     with get_connection() as conn:
         budget_rows = conn.execute(
-            "SELECT category, monthly_limit FROM budgets WHERE user_id = ?",
-            (user_id,),
+            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
         ).fetchall()
 
     budget_insights = []
@@ -168,11 +166,11 @@ def _build_proactive_nudge(user_id: int) -> str:
         cat = row["category"]
         limit_val = float(row["monthly_limit"])
         if cat == "_total":
-            spent = get_month_total([user_id])
-            cat_label = "总预算"
+            spent = get_month_total(None)  # family total
+            cat_label = "家庭总预算"
         else:
-            spent = get_category_total(cat, [user_id])
-            cat_label = cat
+            spent = get_category_total(cat, None)
+            cat_label = f"家庭{cat}"
 
         pct = spent / limit_val * 100 if limit_val > 0 else 0
         remaining = limit_val - spent
@@ -249,19 +247,18 @@ async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             alerts = []
             with get_connection() as conn:
                 budget_rows = conn.execute(
-                    "SELECT category, monthly_limit FROM budgets WHERE user_id = ?",
-                    (user_id,),
+                    "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
                 ).fetchall()
 
             for row in budget_rows:
                 cat = row["category"]
                 limit_val = float(row["monthly_limit"])
                 if cat == "_total":
-                    spent = get_month_total([user_id])
-                    cat_label = "个人总预算"
+                    spent = get_month_total(None)  # family total
+                    cat_label = "家庭总预算"
                 else:
-                    spent = get_category_total(cat, [user_id])
-                    cat_label = cat
+                    spent = get_category_total(cat, None)
+                    cat_label = f"家庭{cat}"
 
                 pct = spent / limit_val * 100 if limit_val > 0 else 0
 
@@ -272,7 +269,7 @@ async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
             if alerts:
                 name = FAMILY_MEMBERS.get(user_id, str(user_id))
-                msg = f"⚠️ *{name}，预算预警*\n\n" + "\n".join(alerts) + "\n\n注意控制接下来的支出哦！"
+                msg = f"⚠️ *{name}，家庭预算预警*\n\n" + "\n".join(alerts) + "\n\n注意控制接下来的支出哦！"
                 await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                 logger.info("Budget alert sent to user %s: %d alerts", user_id, len(alerts))
 
