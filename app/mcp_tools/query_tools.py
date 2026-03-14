@@ -5,6 +5,7 @@ from app.services.skills import (
     skill_get_spending_analysis,
     skill_query_budget,
     skill_query_category_total,
+    skill_query_monthly_archive,
     skill_query_monthly_total,
     skill_query_summary,
     skill_set_budget,
@@ -91,6 +92,22 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_monthly_archive",
+            "description": "查询历史月度账单汇总（已归档的月份）。可以回答'上个月花了多少'、'2月份开支'等问题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "year": {"type": "integer", "description": "年份，如 2026"},
+                    "month": {"type": "integer", "description": "月份，1-12"},
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                },
+                "required": ["year", "month"],
+            },
+        },
+    },
 ]
 
 HANDLERS = {
@@ -100,4 +117,5 @@ HANDLERS = {
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
     "get_spending_analysis": skill_get_spending_analysis,
+    "query_monthly_archive": skill_query_monthly_archive,
 }

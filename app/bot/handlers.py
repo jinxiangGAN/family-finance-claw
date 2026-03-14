@@ -26,7 +26,7 @@ from app.config import (
     WEEKLY_SUMMARY_DAY,
     WEEKLY_SUMMARY_HOUR,
 )
-from app.bot.scheduler import budget_alert_job, proactive_nudge_job, weekly_summary_job
+from app.bot.scheduler import budget_alert_job, monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session
 
@@ -298,5 +298,14 @@ def build_application() -> Application:
         name="budget_alert",
     )
     logger.info("Scheduled: daily budget alert — 21:00")
+
+    # 4. Monthly archive (1st of month, 1AM)
+    app.job_queue.run_monthly(  # type: ignore[union-attr]
+        monthly_archive_job,
+        when=time(hour=1, minute=0, tzinfo=tz),
+        day=1,
+        name="monthly_archive",
+    )
+    logger.info("Scheduled: monthly archive — 1st of month 01:00")
 
     return app

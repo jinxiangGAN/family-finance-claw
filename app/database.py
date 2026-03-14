@@ -93,6 +93,23 @@ CREATE_TABLES_SQL = [
     );
     """,
 
+    # ── Monthly archive snapshots ──
+    # Auto-generated on the 1st of each month for the previous month.
+    # user_id=0 → family total; individual user_id → personal breakdown.
+    """
+    CREATE TABLE IF NOT EXISTS monthly_summaries (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        year        INTEGER NOT NULL,
+        month       INTEGER NOT NULL,
+        user_id     INTEGER NOT NULL,
+        category    TEXT    NOT NULL,
+        total       REAL    NOT NULL DEFAULT 0,
+        currency    TEXT    NOT NULL DEFAULT 'SGD',
+        created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(year, month, user_id, category)
+    );
+    """,
+
     # Legacy flat memories table (kept for backward compat migration)
     """
     CREATE TABLE IF NOT EXISTS memories (
@@ -129,6 +146,7 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_episodic_category   ON episodic_memories(category);",
     "CREATE INDEX IF NOT EXISTS idx_episodic_importance  ON episodic_memories(importance);",
     "CREATE INDEX IF NOT EXISTS idx_core_profiles_user  ON core_profiles(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_monthly_summaries_ym ON monthly_summaries(year, month);",
 ]
 
 # Migrations (idempotent, errors silenced)

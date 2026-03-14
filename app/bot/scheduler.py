@@ -1,9 +1,10 @@
-"""Scheduled tasks: weekly summary + proactive engagement.
+"""Scheduled tasks: weekly summary + proactive engagement + monthly archive.
 
 Jobs:
-1. weekly_summary_job  — Sunday 8PM: comprehensive weekly report
-2. proactive_nudge_job — Fri 6PM: spending check-in & weekend suggestion
-3. budget_alert_job    — Daily 9PM: alert if any budget is >80%
+1. weekly_summary_job      — Sunday 8PM: comprehensive weekly report
+2. proactive_nudge_job     — Fri 6PM: spending check-in & weekend suggestion
+3. budget_alert_job        — Daily 9PM: alert if any budget is >80%
+4. monthly_archive_job     — 1st of month 1AM: archive previous month's data
 """
 
 import logging
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 from app.config import ALLOWED_USER_IDS, CURRENCY, FAMILY_MEMBERS, TIMEZONE
 from app.core.memory import get_recent_memories, store_memory
 from app.services.stats_service import (
+    archive_month,
     get_category_total,
     get_month_summary,
     get_month_total,
@@ -275,3 +277,45 @@ async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         except Exception:
             logger.exception("Failed to check budget for user %s", user_id)
+
+
+# ═══════════════════════════════════════════
+#  Monthly Archive (1st of each month)
+# ═══════════════════════════════════════════
+
+async def monthly_archive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Archive last month's expense summary into monthly_summaries table.
+
+    Runs on the 1st of each month at 1AM. Safe to run multiple times
+    (UPSERT — won't duplicate data).
+    """
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+
+    # Archive the PREVIOUS month
+    if now.month == 1:
+        year, month = now.year - 1, 12
+    else:
+        year, month = now.year, now.month - 1
+
+    logger.info("Running monthly archive job for %04d-%02d", year, month)
+    try:
+        count = archive_month(year, month)
+        logger.info("Monthly archive complete: %d rows for %04d-%02d", count, year, month)
+
+        # Notify family members
+        recipients = ALLOWED_USER_IDS if ALLOWED_USER_IDS else list(FAMILY_MEMBERS.keys())
+        if recipients and count > 0:
+            msg = (
+                f"📦 *{year}年{month}月账单已归档*\n\n"
+                f"共 {count} 条汇总记录已保存。\n"
+                "随时可以问我「上个月花了多少」来查看！"
+            )
+            for uid in recipients:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=msg, parse_mode="Markdown")
+                except Exception:
+                    logger.exception("Failed to send archive notification to %s", uid)
+
+    except Exception:
+        logger.exception("Monthly archive job failed for %04d-%02d", year, month)
