@@ -445,7 +445,7 @@ class MemoryManager:
                     sim_tag = f" (similarity:{ep.similarity:.0%})" if ep.similarity > 0 else ""
                     lines.append(f"{prefix} [{ep.category}] {ep.content}{sim_tag}")
                 parts.append("\n".join(lines))
-            logger.debug("Tier 3 recall triggered for: %s", query[:60])
+                logger.debug("Tier 3 recall triggered for: %s", query[:60])
         else:
             logger.debug("Tier 3 recall skipped (no recall intent): %s", query[:60])
 

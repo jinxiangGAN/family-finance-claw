@@ -98,7 +98,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             logger.info("No API key, using fallback")
         else:
             logger.warning("API token limit reached, using fallback")
-        return _fallback_handle(text, user_id, user_name)
+        return await _fallback_handle(text, user_id, user_name)
 
     try:
         return await _llm_agent_loop(text, user_id, user_name, session)
@@ -107,16 +107,16 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             logger.warning("Rate limited (429) for user=%d, returning friendly message", user_id)
             return "记账太快啦，小灰毛还没转过弯来，请等 10 秒再试哦 🐾"
         logger.exception("Agent LLM loop failed (HTTP %d), falling back", e.response.status_code)
-        return _fallback_handle(text, user_id, user_name)
+        return await _fallback_handle(text, user_id, user_name)
     except Exception:
         logger.exception("Agent LLM loop failed, falling back")
-        return _fallback_handle(text, user_id, user_name)
+        return await _fallback_handle(text, user_id, user_name)
 
 
 async def _llm_agent_loop(text: str, user_id: int, user_name: str, session: Session) -> str:
     provider = _get_provider()
     if provider is None:
-        return _fallback_handle(text, user_id, user_name)
+        return await _fallback_handle(text, user_id, user_name)
 
     mm = _get_memory_manager()
     builder = _get_prompt_builder()
@@ -195,7 +195,7 @@ async def _llm_agent_loop(text: str, user_id: int, user_name: str, session: Sess
                 params = {}
 
             logger.info("[LLM_INTENT] Round %d — Calling tool: %s with args: %s", _round + 1, tool_name, json.dumps(params, ensure_ascii=False)[:300])
-            result = execute_tool(tool_name, user_id, user_name, params)
+            result = await execute_tool(tool_name, user_id, user_name, params)
             logger.info("[TOOL_RESULT] %s → success=%s %s", tool_name, result.get("success"), json.dumps(result, ensure_ascii=False)[:200])
 
             messages.append({
@@ -311,7 +311,7 @@ async def agent_handle_image(
 
         replies = []
         for item in valid_items:
-            result = execute_tool("record_expense", user_id, user_name, {
+            result = await execute_tool("record_expense", user_id, user_name, {
                 "category": item.get("category", "其他"),
                 "amount": float(item["amount"]),
                 "note": item.get("note", "收据"),
@@ -346,7 +346,7 @@ async def agent_handle_image(
 
 async def agent_handle_export(user_id: int, user_name: str, scope: str = "me") -> Optional[str]:
     """Handle /export command. Returns CSV content or None."""
-    result = execute_tool("export_csv", user_id, user_name, {"scope": scope})
+    result = await execute_tool("export_csv", user_id, user_name, {"scope": scope})
     if result.get("success"):
         return result.get("csv_content", "")
     return None
@@ -376,14 +376,14 @@ def _guess_category(note: str) -> str:
     return "其他"
 
 
-def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
+async def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
     text = text.strip()
 
     if "汇总" in text:
         scope = "family" if any(k in text for k in ("家庭", "总", "一共")) else "me"
         if any(k in text for k in ("老婆", "老公", "妻子", "丈夫")):
             scope = "spouse"
-        result = execute_tool("query_summary", user_id, user_name, {"scope": scope})
+        result = await execute_tool("query_summary", user_id, user_name, {"scope": scope})
         return _format_summary(result)
 
     if "花了多少" in text:
@@ -399,16 +399,16 @@ def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
                 cat = c
                 break
         if cat:
-            result = execute_tool("query_category_total", user_id, user_name, {"category": cat, "scope": scope})
+            result = await execute_tool("query_category_total", user_id, user_name, {"category": cat, "scope": scope})
             return f"📊 {result['label']}本月{result['category']}支出：{result['total']:.2f} {CURRENCY}"
         else:
-            result = execute_tool("query_monthly_total", user_id, user_name, {"scope": scope})
+            result = await execute_tool("query_monthly_total", user_id, user_name, {"scope": scope})
             return f"📊 {result['label']}本月总支出：{result['total']:.2f} {CURRENCY}"
 
     if "预算" in text:
         if any(k in text for k in ("设", "改", "调")):
             return "⚠️ 设置预算请在 LLM 可用时使用，或使用 /help 查看帮助。"
-        result = execute_tool("query_budget", user_id, user_name, {})
+        result = await execute_tool("query_budget", user_id, user_name, {})
         return _format_budget(result)
 
     m = _EXPENSE_RE.match(text)
@@ -416,7 +416,7 @@ def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
         note = m.group(1).strip()
         amount = float(m.group(2))
         category = _guess_category(note)
-        result = execute_tool("record_expense", user_id, user_name, {
+        result = await execute_tool("record_expense", user_id, user_name, {
             "category": category, "amount": amount, "note": note,
         })
         reply = f"✅ 已记录\n{result['category']}  {result['amount']:.2f} {CURRENCY}"

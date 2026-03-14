@@ -1,22 +1,22 @@
 """MCP Tool: Enhanced memory system — 3-tier architecture.
 
 Tools:
-  - store_memory       → save an episodic memory (Tier 3)
-  - recall_memories    → search episodic memories
+  - store_memory       → save an episodic memory (Tier 3) with embedding
+  - recall_memories    → search episodic memories (vector + FTS)
   - forget_memory      → delete a specific memory
   - update_user_profile → upsert core profile (Tier 1) — Agent auto-calls this
   - get_user_profile   → read user's core profile
 """
 
-from app.core.memory import delete_memory, get_memory_manager, recall_memories, store_memory
+from app.core.memory import delete_memory, get_memory_manager
 
 
 # ═══════════════════════════════════════════
-#  Handlers
+#  Handlers (async where embedding is needed)
 # ═══════════════════════════════════════════
 
-def _handle_store_memory(user_id: int, user_name: str, params: dict) -> dict:
-    """Store a new episodic memory about the user/family."""
+async def _handle_store_memory(user_id: int, user_name: str, params: dict) -> dict:
+    """Store a new episodic memory WITH embedding (async)."""
     content = params.get("content", "").strip()
     if not content:
         return {"success": False, "message": "Memory content cannot be empty"}
@@ -25,7 +25,8 @@ def _handle_store_memory(user_id: int, user_name: str, params: dict) -> dict:
     importance = int(params.get("importance", 5))
     target_uid = 0 if params.get("shared", False) else user_id
 
-    memory_id = store_memory(target_uid, content, category, importance)
+    mm = get_memory_manager()
+    memory_id = await mm.store_episode(target_uid, content, category, importance)
     return {
         "success": True,
         "memory_id": memory_id,
@@ -33,17 +34,18 @@ def _handle_store_memory(user_id: int, user_name: str, params: dict) -> dict:
     }
 
 
-def _handle_recall_memories(user_id: int, user_name: str, params: dict) -> dict:
-    """Recall relevant episodic memories."""
+async def _handle_recall_memories(user_id: int, user_name: str, params: dict) -> dict:
+    """Recall relevant episodic memories (vector similarity + FTS fallback, async)."""
     query = params.get("query", "").strip()
     if not query:
         return {"success": False, "memories": [], "message": "Please provide a search query"}
 
-    memories = recall_memories(user_id, query, limit=5)
+    mm = get_memory_manager()
+    episodes = await mm.recall_episodes(user_id, query, limit=5)
     return {
         "success": True,
-        "memories": [m["content"] for m in memories],
-        "count": len(memories),
+        "memories": [ep.content for ep in episodes],
+        "count": len(episodes),
     }
 
 

@@ -4,14 +4,18 @@ Each tool module (*.py in mcp_tools/) exposes:
   - TOOLS: list[dict]   — OpenAI function-calling schemas
   - HANDLERS: dict       — {name: handler_func(user_id, user_name, params) -> dict}
 
+Handlers may be sync or async. execute_tool() is async and handles both.
+
 Usage:
     from app.mcp_tools.registry import get_all_tools, execute_tool
 
-    tools = get_all_tools()           # for LLM function-calling
-    result = execute_tool(name, ...)  # dispatch by name
+    tools = get_all_tools()                               # for LLM function-calling
+    result = await execute_tool(name, uid, uname, params) # dispatch by name
 """
 
+import asyncio
 import importlib
+import inspect
 import logging
 import pkgutil
 from typing import Any, Callable
@@ -67,13 +71,13 @@ def get_all_handlers() -> dict[str, Callable]:
     return _tool_handlers
 
 
-def execute_tool(
+async def execute_tool(
     tool_name: str,
     user_id: int,
     user_name: str,
     params: dict,
 ) -> dict:
-    """Execute a tool by name. Returns result dict."""
+    """Execute a tool by name (supports both sync and async handlers)."""
     if not _initialized:
         _discover_tools()
 
@@ -81,7 +85,11 @@ def execute_tool(
     if handler is None:
         return {"success": False, "message": f"未知的工具: {tool_name}"}
     try:
-        return handler(user_id, user_name, params)
+        result = handler(user_id, user_name, params)
+        # If the handler is async, await the coroutine
+        if inspect.isawaitable(result):
+            result = await result
+        return result
     except Exception as e:
         logger.exception("Tool '%s' failed", tool_name)
         return {"success": False, "message": f"工具执行失败: {str(e)}"}
