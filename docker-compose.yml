@@ -5,6 +5,7 @@ services:
     build: .
     container_name: family-finance-bot
     restart: unless-stopped
+    network_mode: host          # 直接用宿主机网络，避免 Docker 桥接 IPv6 超时
     env_file:
       - .env
     volumes:
