@@ -47,6 +47,32 @@ _MEMORY_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
     (re.compile(r"(喜欢|不喜欢|偏好|习惯|通常|尽量|以后|不再|少坐|少点外卖|多做饭)"), "preference", 6),
     (re.compile(r"(决定|商量好了|定了|以后我们|这个月我们|接下来我们)"), "decision", 7),
 ]
+_FINANCE_HINT_TOKENS = (
+    "花",
+    "开销",
+    "消费",
+    "支出",
+    "预算",
+    "记账",
+    "报销",
+    "房租",
+    "机票",
+    "签证",
+    "明细",
+    "汇总",
+    "统计",
+    "账单",
+    "删除",
+    "撤销",
+    "多少钱",
+    "多少",
+    "总共",
+    "最近",
+    "上个月",
+    "这个月",
+    "旅行",
+    "计划",
+)
 
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
@@ -137,6 +163,21 @@ def _looks_like_query(text: str) -> bool:
             "看下",
         )
     )
+
+
+def _detect_chat_mode(text: str, image_path: Optional[str] = None) -> str:
+    stripped = text.strip()
+    if image_path:
+        return "finance"
+    if not stripped:
+        return "chat"
+    if _RECORD_LIKE_RE.match(stripped):
+        return "finance"
+    if any(token in stripped for token in _FINANCE_HINT_TOKENS):
+        return "finance"
+    if re.search(r"\d+(?:\.\d+)?", stripped):
+        return "finance"
+    return "chat"
 
 
 def _looks_like_memory_candidate(text: str) -> bool:
@@ -234,6 +275,7 @@ def _build_prompt(
     db_snapshot = _format_db_snapshot(user_id)
     family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "未配置"
     chat_kind = "私聊" if session.is_private else "群聊"
+    chat_mode = _detect_chat_mode(text, image_path=image_path)
 
     user_block = text.strip() or "用户发送了一张图片，请结合图片判断。"
     image_hint = ""
@@ -273,6 +315,12 @@ def _build_prompt(
 18. 如果用户要删账，优先先用 `query_recent_expenses` 或相关查询确认记录，再用 `delete_expense_by_id` 精准删除；只有明确说“撤销上一笔”时才用 `delete_last_expense`。
 19. 默认把 `regular` 视为日常开销、`special` 视为专项开销。除非用户明确要求“包含专项”，否则月度/周度/预算类回答优先使用默认日常口径。
 20. 如果用户要创建旅行/装修/婚礼等专项计划，优先用 `start_event` 创建 `planning` 状态的计划；只有用户明确说“开始了/进入进行中”时，再把它设为 `active`。
+21. 小灰毛有两种工作方式：
+    - `finance mode`：处理记账、预算、历史、记忆、专项计划时，严格查库和落库。
+    - `chat mode`：用户只是闲聊、吐槽、问候、撒娇、求安慰时，可以自然聊天，不必强行扯到账务。
+22. 在 `chat mode` 下，小灰毛要更温和、更有陪伴感，像熟悉家里情况的贴心助手；语气自然、简短、有分寸，不油腻、不说教。
+23. 在 `chat mode` 下，如果用户顺带提到一点消费情绪或生活状态，可以轻轻回应；只有当用户明确问金额、历史、预算、记录时，才切回 `finance mode` 查库。
+24. 如果一句话同时包含闲聊和账务诉求，优先先温和回应一句，再处理账务部分。
 
 推荐执行方式：
 - 运行只读或短命令时，优先带上 `PYTHONPYCACHEPREFIX=/tmp/pycache python3 ...`，避免 pycache 权限问题。
@@ -283,6 +331,7 @@ def _build_prompt(
 
 上下文：
 - 当前时间: {now}
+- 当前工作模式: {chat_mode}
 - 用户ID: {user_id}
 - 用户名: {user_name}
 - 会话类型: {chat_kind}
