@@ -3,8 +3,10 @@
 from app.config import CATEGORIES
 from app.services.skills import (
     skill_query_category_items,
+    skill_query_recent_expenses,
     skill_get_spending_analysis,
     skill_query_budget,
+    skill_query_budget_changes,
     skill_query_category_total,
     skill_query_monthly_archive,
     skill_query_monthly_total,
@@ -22,6 +24,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "scope": {"type": "string", "description": "Query scope: personal, spouse, or whole family", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
                 },
                 "required": ["scope"],
             },
@@ -37,6 +40,7 @@ TOOLS = [
                 "properties": {
                     "category": {"type": "string", "description": "Expense category to query", "enum": CATEGORIES},
                     "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
                 },
                 "required": ["category", "scope"],
             },
@@ -53,8 +57,26 @@ TOOLS = [
                     "category": {"type": "string", "description": "Expense category to query", "enum": CATEGORIES},
                     "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
                     "limit": {"type": "integer", "description": "Max number of records to return, default 20"},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
                 },
                 "required": ["category", "scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_recent_expenses",
+            "description": "Query the most recent expenses. Use this before deleting by ID or when the user asks for recent records.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
+                    "category": {"type": "string", "description": "Optional category filter", "enum": ["", *CATEGORIES]},
+                    "limit": {"type": "integer", "description": "Max number of records to return, default 10, max 30"},
+                    "ledger_type": {"type": "string", "description": "Optional ledger filter", "enum": ["", "regular", "special"]},
+                },
+                "required": ["scope"],
             },
         },
     },
@@ -67,6 +89,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
                 },
                 "required": ["scope"],
             },
@@ -82,6 +105,7 @@ TOOLS = [
                 "properties": {
                     "category": {"type": "string", "description": "预算分类。'_total' 表示家庭总预算，其他如 '餐饮'、'交通' 等"},
                     "amount": {"type": "number", "description": "每月预算金额"},
+                    "note": {"type": "string", "description": "可选：这次调整预算的原因或备注"},
                 },
                 "required": ["category", "amount"],
             },
@@ -98,12 +122,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_budget_changes",
+            "description": "查询最近的预算调整历史。可回答'预算改过什么'、'房租预算什么时候调过'等问题。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "可选：只查询某个预算分类，'_total' 表示总预算"},
+                    "limit": {"type": "integer", "description": "最多返回多少条，默认10，最大30"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_spending_analysis",
             "description": "Retrieve spending data and patterns for financial analysis and advice.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "scope": {"type": "string", "description": "Analysis scope", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
                 },
                 "required": ["scope"],
             },
@@ -131,9 +170,11 @@ HANDLERS = {
     "query_monthly_total": skill_query_monthly_total,
     "query_category_total": skill_query_category_total,
     "query_category_items": skill_query_category_items,
+    "query_recent_expenses": skill_query_recent_expenses,
     "query_summary": skill_query_summary,
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
+    "query_budget_changes": skill_query_budget_changes,
     "get_spending_analysis": skill_get_spending_analysis,
     "query_monthly_archive": skill_query_monthly_archive,
 }

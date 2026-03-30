@@ -8,24 +8,23 @@ load_dotenv()
 # Telegram
 TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# ─── LLM Provider ───
-# Supported: openai, minimax, deepseek, qwen, gemini, custom
-LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini")
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or os.getenv("MINIMAX_API_KEY", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "") or os.getenv("MINIMAX_MODEL", "gemini-3-flash-preview")
+# ─── Local Codex bridge ───
+BOT_BACKEND: str = os.getenv("BOT_BACKEND", "codex")
+CODEX_BIN: str = os.getenv("CODEX_BIN", "codex")
+CODEX_MODEL: str = os.getenv("CODEX_MODEL", "")
+CODEX_PROFILE: str = os.getenv("CODEX_PROFILE", "")
+CODEX_HOME: str = os.getenv("CODEX_HOME", os.path.expanduser("~/.codex"))
+CODEX_TIMEOUT_SECONDS: int = int(os.getenv("CODEX_TIMEOUT_SECONDS", "180"))
+CODEX_WORKDIR: str = os.getenv("CODEX_WORKDIR", os.getcwd())
+
+# Legacy LLM settings kept for backward-compatible imports in helper modules.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "codex")
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "")
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
-# Vision model (for receipt OCR) — defaults to same as LLM_MODEL
 LLM_VISION_MODEL: str = os.getenv("LLM_VISION_MODEL", "")
-# Embedding model — for semantic memory vector search
-# Leave empty to use FTS5 fallback (no embedding API call)
 LLM_EMBEDDING_MODEL: str = os.getenv("LLM_EMBEDDING_MODEL", "")
-
-# Backward compat
-MINIMAX_API_KEY: str = LLM_API_KEY
-MINIMAX_MODEL: str = LLM_MODEL
-
-# Monthly token limit (0 = unlimited)
-LLM_MONTHLY_TOKEN_LIMIT: int = int(os.getenv("LLM_MONTHLY_TOKEN_LIMIT", "0") or os.getenv("MINIMAX_MONTHLY_TOKEN_LIMIT", "500000"))
+LLM_MONTHLY_TOKEN_LIMIT: int = int(os.getenv("LLM_MONTHLY_TOKEN_LIMIT", "0"))
 
 # Database
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/expenses.db")
@@ -43,6 +42,13 @@ for _m in _members_raw.split(","):
         _uid, _name = _m.split(":", 1)
         FAMILY_MEMBERS[int(_uid.strip())] = _name.strip()
 
+if len(FAMILY_MEMBERS) == 2:
+    _sorted_ids = sorted(FAMILY_MEMBERS.keys())
+    if not FAMILY_MEMBERS[_sorted_ids[0]]:
+        FAMILY_MEMBERS[_sorted_ids[0]] = "小鸡毛"
+    if not FAMILY_MEMBERS[_sorted_ids[1]]:
+        FAMILY_MEMBERS[_sorted_ids[1]] = "小白"
+
 # Timezone & Location
 TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Singapore")
 LOCATION: str = os.getenv("LOCATION", "Singapore")
@@ -58,5 +64,5 @@ WEEKLY_SUMMARY_DAY: int = int(os.getenv("WEEKLY_SUMMARY_DAY", "6"))
 WEEKLY_SUMMARY_HOUR: int = int(os.getenv("WEEKLY_SUMMARY_HOUR", "20"))
 
 # Memory settings
-MEMORY_MAX_WORKING: int = int(os.getenv("MEMORY_MAX_WORKING", "10"))  # max conversation turns
-MEMORY_RECALL_TOP_K: int = int(os.getenv("MEMORY_RECALL_TOP_K", "3"))  # top-K episodic recall
+MEMORY_MAX_WORKING: int = int(os.getenv("MEMORY_MAX_WORKING", "10"))
+MEMORY_RECALL_TOP_K: int = int(os.getenv("MEMORY_RECALL_TOP_K", "3"))

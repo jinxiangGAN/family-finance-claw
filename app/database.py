@@ -29,6 +29,7 @@ CREATE_TABLES_SQL = [
         amount_sgd  REAL    NOT NULL DEFAULT 0,
         note        TEXT    NOT NULL DEFAULT '',
         event_tag   TEXT    NOT NULL DEFAULT '',
+        ledger_type TEXT    NOT NULL DEFAULT 'regular',
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     """,
@@ -40,6 +41,30 @@ CREATE_TABLES_SQL = [
         monthly_limit REAL  NOT NULL,
         updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, category)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_changes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        budget_user_id  INTEGER NOT NULL,
+        category        TEXT    NOT NULL DEFAULT '_total',
+        old_limit       REAL,
+        new_limit       REAL    NOT NULL,
+        changed_by_id   INTEGER NOT NULL,
+        changed_by_name TEXT    NOT NULL DEFAULT '',
+        note            TEXT    NOT NULL DEFAULT '',
+        created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_alert_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        year        INTEGER NOT NULL,
+        month       INTEGER NOT NULL,
+        category    TEXT    NOT NULL DEFAULT '_total',
+        alert_level TEXT    NOT NULL,
+        sent_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(year, month, category, alert_level)
     );
     """,
     """
@@ -60,6 +85,7 @@ CREATE_TABLES_SQL = [
         tag         TEXT    NOT NULL,
         description TEXT    NOT NULL DEFAULT '',
         is_active   INTEGER NOT NULL DEFAULT 1,
+        status      TEXT    NOT NULL DEFAULT 'active',
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, tag)
     );
@@ -136,7 +162,11 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_expenses_category   ON expenses(category);",
     "CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_expenses_event_tag  ON expenses(event_tag);",
+    "CREATE INDEX IF NOT EXISTS idx_expenses_ledger_type ON expenses(ledger_type);",
     "CREATE INDEX IF NOT EXISTS idx_budgets_user_id     ON budgets(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_changes_budget_user_id ON budget_changes(budget_user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_changes_created_at ON budget_changes(created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_alert_events_ym ON budget_alert_events(year, month);",
     "CREATE INDEX IF NOT EXISTS idx_api_usage_created   ON api_usage(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_events_user_id      ON events(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_memories_user_id    ON memories(user_id);",
@@ -154,6 +184,8 @@ MIGRATIONS = [
     "ALTER TABLE expenses ADD COLUMN currency TEXT NOT NULL DEFAULT 'SGD';",
     "ALTER TABLE expenses ADD COLUMN amount_sgd REAL NOT NULL DEFAULT 0;",
     "ALTER TABLE expenses ADD COLUMN event_tag TEXT NOT NULL DEFAULT '';",
+    "ALTER TABLE expenses ADD COLUMN ledger_type TEXT NOT NULL DEFAULT 'regular';",
+    "ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'active';",
 ]
 
 # Category renames: old_name → new_name (applied to expenses + budgets on startup)

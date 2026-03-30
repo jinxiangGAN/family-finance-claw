@@ -1,567 +1,445 @@
-"""LLM Agent v4: 3-tier memory + dynamic prompt factory + session-aware.
+"""Local Codex bridge for Telegram messages.
 
-Architecture (inspired by OpenClaw):
-  1. User message → Session tracking (working memory + persona)
-  2. MemoryManager.assemble_memory_context → Tier 1/2/3 recall
-  3. PromptBuilder.build → modular system prompt assembly
-  4. LLM call with MCP tools → execute tool calls
-  5. Post-turn: update working memory buffer
-  6. Return final reply (tone adapted to private/group chat)
+This replaces the old remote LLM provider flow. Every Telegram message is
+forwarded to the local Codex CLI, which can inspect this repository and use the
+existing Python skills/database helpers to manage expenses.
 """
 
-import json
+import asyncio
 import logging
+import os
 import re
+import tempfile
+from datetime import datetime
 from typing import Optional
 
-import httpx
+from zoneinfo import ZoneInfo
 
-from app.services.api_tracker import is_within_limit, record_usage
+from app.core.memory import get_memory_manager, get_recent_memories, store_memory
 from app.config import (
+    CODEX_BIN,
+    CODEX_HOME,
+    CODEX_MODEL,
+    CODEX_PROFILE,
+    CODEX_TIMEOUT_SECONDS,
+    CODEX_WORKDIR,
     CURRENCY,
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_EMBEDDING_MODEL,
-    LLM_MODEL,
-    LLM_PROVIDER,
-    LLM_VISION_MODEL,
-    MEMORY_RECALL_TOP_K,
+    DATABASE_PATH,
+    FAMILY_MEMBERS,
+    LOCATION,
+    TIMEZONE,
 )
-from app.core.llm_provider import PROVIDER_PRESETS, create_provider
-from app.mcp_tools.registry import execute_tool, get_all_tools
-from app.core.memory import MemoryManager, set_memory_manager
-from app.core.prompt_builder import VISION_PROMPT, PromptBuilder
 from app.core.session import Session
+from app.mcp_tools.registry import execute_tool
+from app.services.expense_service import get_recent_expenses
 
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════
-#  Singleton initialization
-# ═══════════════════════════════════════════
+_SESSION_HISTORY: dict[tuple[int, int], list[dict[str, str]]] = {}
+_PENDING_MEMORY: dict[tuple[int, int], dict[str, object]] = {}
+_MAX_HISTORY_TURNS = 6
+_MAX_DB_RECENT_EXPENSES = 5
+_MAX_DB_RECENT_MEMORIES = 5
 
-_provider = None
-_vision_provider = None
-_memory_manager: Optional[MemoryManager] = None
-_prompt_builder: Optional[PromptBuilder] = None
-
-
-def _get_provider():
-    global _provider
-    if _provider is None and LLM_API_KEY:
-        _provider = create_provider(LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_BASE_URL)
-    return _provider
+_RECORD_LIKE_RE = re.compile(r"^\s*\S.{0,40}\s+\d+(?:\.\d+)?(?:\s*[A-Za-z]{3}|元|块|人民币)?\s*$")
+_MEMORY_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
+    (re.compile(r"(目标|计划|打算|争取|要存|想存|少花|省钱|控制预算|减少开销)"), "goal", 7),
+    (re.compile(r"(喜欢|不喜欢|偏好|习惯|通常|尽量|以后|不再|少坐|少点外卖|多做饭)"), "preference", 6),
+    (re.compile(r"(决定|商量好了|定了|以后我们|这个月我们|接下来我们)"), "decision", 7),
+]
 
 
-def _get_vision_provider():
-    global _vision_provider
-    if _vision_provider is None and LLM_API_KEY:
-        vision_model = LLM_VISION_MODEL or LLM_MODEL
-        _vision_provider = create_provider(LLM_PROVIDER, LLM_API_KEY, vision_model, LLM_BASE_URL)
-    return _vision_provider
+def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
+    key = (user_id, chat_id)
+    history = _SESSION_HISTORY.setdefault(key, [])
+    history.append({"role": role, "content": content})
+    if len(history) > _MAX_HISTORY_TURNS * 2:
+        _SESSION_HISTORY[key] = history[-(_MAX_HISTORY_TURNS * 2):]
 
 
-def _get_memory_manager() -> MemoryManager:
-    """Get or initialize the global MemoryManager with embedding support."""
-    global _memory_manager
-    if _memory_manager is None:
-        provider = _get_provider()
-        # Determine embedding model
-        embedding_model = LLM_EMBEDDING_MODEL
-        if not embedding_model:
-            preset = PROVIDER_PRESETS.get(LLM_PROVIDER, {})
-            embedding_model = preset.get("embedding_model", "")
-        _memory_manager = MemoryManager(provider=provider, embedding_model=embedding_model)
-        set_memory_manager(_memory_manager)  # register globally for legacy code paths
-        logger.info(
-            "MemoryManager initialized (provider=%s, embedding=%s)",
-            LLM_PROVIDER if provider else "none",
-            embedding_model or "FTS5-only",
+def _get_recent_history(user_id: int, chat_id: int) -> list[dict[str, str]]:
+    return list(_SESSION_HISTORY.get((user_id, chat_id), []))
+
+
+def _reset_session_history(user_id: int, chat_id: int) -> None:
+    _SESSION_HISTORY.pop((user_id, chat_id), None)
+    _PENDING_MEMORY.pop((user_id, chat_id), None)
+
+
+def _format_history(history: list[dict[str, str]]) -> str:
+    if not history:
+        return "无"
+    lines: list[str] = []
+    for item in history:
+        role = "用户" if item["role"] == "user" else "助手"
+        lines.append(f"- {role}: {item['content']}")
+    return "\n".join(lines)
+
+
+def _format_db_snapshot(user_id: int) -> str:
+    mm = get_memory_manager()
+    profile_entries = mm.get_all_profile_keys(user_id)
+    recent_memories = get_recent_memories(user_id, limit=_MAX_DB_RECENT_MEMORIES)
+    recent_expenses = get_recent_expenses(user_id, limit=_MAX_DB_RECENT_EXPENSES)
+
+    lines = ["[Database Snapshot]"]
+
+    if recent_expenses:
+        lines.append("最近账目记录:")
+        for exp in recent_expenses:
+            lines.append(
+                f"- #{exp.id} {exp.category} {exp.amount:.2f} {exp.currency} "
+                f"[{exp.ledger_type}] 备注:{exp.note or '无'} "
+                f"事件:{exp.event_tag or '无'} 时间:{exp.created_at}"
+            )
+    else:
+        lines.append("最近账目记录: 无")
+
+    if recent_memories:
+        lines.append("最近记忆:")
+        for memory in recent_memories:
+            scope = "家庭" if memory.get("scope") == "family" else "个人"
+            lines.append(
+                f"- #{memory['id']} [{scope}/{memory['category']}] {memory['content']} "
+                f"(importance={memory['importance']})"
+            )
+    else:
+        lines.append("最近记忆: 无")
+
+    if profile_entries:
+        lines.append("当前画像/Profile:")
+        for entry in profile_entries:
+            scope = "家庭" if entry.get("scope") == "family" else "个人"
+            lines.append(f"- [{scope}] {entry['key']}: {entry['value']}")
+    else:
+        lines.append("当前画像/Profile: 无")
+
+    return "\n".join(lines)
+
+
+def _looks_like_query(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "多少",
+            "明细",
+            "汇总",
+            "分析",
+            "预算",
+            "记得",
+            "上次",
+            "之前",
+            "查询",
+            "导出",
+            "还剩",
+            "统计",
+            "回顾",
+            "看下",
         )
-    return _memory_manager
-
-
-def _get_prompt_builder() -> PromptBuilder:
-    global _prompt_builder
-    if _prompt_builder is None:
-        _prompt_builder = PromptBuilder()
-    return _prompt_builder
-
-
-# ═══════════════════════════════════════════
-#  Main entry: text messages
-# ═══════════════════════════════════════════
-
-async def agent_handle(text: str, user_id: int, user_name: str, session: Session) -> str:
-    """Main agent entry: memory-augmented, session-aware processing."""
-    if not LLM_API_KEY or not is_within_limit():
-        if not LLM_API_KEY:
-            logger.info("No API key, using fallback")
-        else:
-            logger.warning("API token limit reached, using fallback")
-        return await _fallback_handle(text, user_id, user_name)
-
-    try:
-        return await _llm_agent_loop(text, user_id, user_name, session)
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            logger.warning("Rate limited (429) for user=%d, returning friendly message", user_id)
-            return "记账太快啦，小灰毛还没转过弯来，请等 10 秒再试哦 🐾"
-        logger.exception("Agent LLM loop failed (HTTP %d), falling back", e.response.status_code)
-        return await _fallback_handle(text, user_id, user_name)
-    except Exception:
-        logger.exception("Agent LLM loop failed, falling back")
-        return await _fallback_handle(text, user_id, user_name)
-
-
-async def _llm_agent_loop(text: str, user_id: int, user_name: str, session: Session) -> str:
-    provider = _get_provider()
-    if provider is None:
-        return await _fallback_handle(text, user_id, user_name)
-
-    mm = _get_memory_manager()
-    builder = _get_prompt_builder()
-    chat_id = session.chat_id
-
-    # ── Session-timeout: clear stale working memory on new session ──
-    if session.interaction_count == 0:
-        mm.clear_working_memory(user_id, chat_id)
-        logger.info("[SESSION] New/expired session for user=%d chat=%d — working memory cleared", user_id, chat_id)
-
-    # ── LOG: Input ──
-    logger.info("[INPUT] user=%d name=%s chat=%s msg=%s", user_id, user_name, "private" if session.is_private else "group", text)
-
-    # Step 1: Assemble memory context (all 3 tiers; Tier 3 gated by intent)
-    memory_context = await mm.assemble_memory_context(user_id, text, chat_id=chat_id)
-    if memory_context:
-        logger.info("[MEMORY] Recalled %d chars of context for user %d", len(memory_context), user_id)
-
-    # Step 2: Build dynamic system prompt
-    system_prompt = builder.build(
-        user_id=user_id,
-        is_private=session.is_private,
-        memory_context=memory_context,
     )
 
-    # Step 3: Build messages (include working memory as conversation history)
-    messages = [{"role": "system", "content": system_prompt}]
 
-    # Inject working memory turns for multi-turn coherence (isolated per chat)
-    wm = mm.get_working_memory(user_id, chat_id)
-    wm_msgs = wm.get_messages()
-    if wm_msgs:
-        logger.info("[WORKING_MEM] Injecting %d past turns (chat=%d)", len(wm_msgs), chat_id)
-    for past_msg in wm_msgs:
-        messages.append(past_msg)
+def _looks_like_memory_candidate(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < 6 or len(stripped) > 120:
+        return False
+    if "?" in stripped or "？" in stripped:
+        return False
+    if _RECORD_LIKE_RE.match(stripped):
+        return False
+    if _looks_like_query(stripped):
+        return False
+    return any(pattern.search(stripped) for pattern, _, _ in _MEMORY_PATTERNS)
 
-    # Current user message
-    messages.append({"role": "user", "content": text})
 
-    # Step 4: Get MCP tools & call LLM
-    tools = get_all_tools()
+def _detect_memory_candidate(user_id: int, text: str) -> Optional[dict[str, object]]:
+    stripped = text.strip()
+    if not _looks_like_memory_candidate(stripped):
+        return None
 
-    resp_msg, usage, model_used = await provider.chat_completion(messages, tools=tools)
-    if usage:
-        logger.info("[LLM_USAGE] prompt=%d completion=%d total=%d model=%s", usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), usage.get("total_tokens", 0), model_used)
-        record_usage(
-            user_id,
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-            usage.get("total_tokens", 0),
-            model_used,
-        )
+    recent_memories = get_recent_memories(user_id, limit=10)
+    if any(m["content"].strip() == stripped for m in recent_memories):
+        return {
+            "duplicate": True,
+            "content": stripped,
+        }
 
-    tool_calls = resp_msg.get("tool_calls")
-    if not tool_calls:
-        reply = resp_msg.get("content", "🤔 我没有理解你的意思，请输入 /help 查看帮助。")
-        logger.info("[LLM_REPLY] No tool calls, direct reply (%d chars)", len(reply))
-        # Update working memory (isolated per chat)
-        mm.add_working_turn(user_id, chat_id, "user", text)
-        mm.add_working_turn(user_id, chat_id, "assistant", reply)
-        return reply
+    for pattern, category, importance in _MEMORY_PATTERNS:
+        if not pattern.search(stripped):
+            continue
+        target_user_id = 0 if any(token in stripped for token in ("我们", "全家", "家里", "老婆", "老公")) else user_id
+        return {
+            "content": stripped,
+            "category": category,
+            "importance": importance,
+            "target_user_id": target_user_id,
+            "shared": target_user_id == 0,
+        }
+    return None
 
-    # Step 5–6: ReAct loop — execute tool calls then let LLM synthesise reply.
-    # Supports chained tool calls: if the LLM's follow-up response also
-    # contains tool_calls (e.g. "记账后顺便查预算"), keep iterating.
-    # PIN the same model for the entire tool chain to avoid cross-model
-    # incompatibilities (e.g. thought_signature required by Gemini lite).
-    pinned_model = model_used
-    logger.info("[AGENT] Pinning model=%s for tool chain", pinned_model)
 
-    # Collect tool results so we can hand off to another model if pinned model dies
-    last_tool_results: list[tuple[str, str]] = []  # [(tool_name, result_json), ...]
+def _is_yes_confirmation(text: str) -> bool:
+    stripped = text.strip().lower()
+    return stripped in {
+        "是",
+        "好",
+        "好的",
+        "好呀",
+        "好啊",
+        "行",
+        "行啊",
+        "可以",
+        "记吧",
+        "记住",
+        "要",
+        "yes",
+        "y",
+    }
 
-    MAX_TOOL_ROUNDS = 3
-    for _round in range(MAX_TOOL_ROUNDS):
-        messages.append(resp_msg)
-        last_tool_results.clear()
 
-        for tc in tool_calls:
-            func = tc.get("function", {})
-            tool_name = func.get("name", "")
-            try:
-                params = json.loads(func.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                params = {}
+def _is_no_confirmation(text: str) -> bool:
+    stripped = text.strip().lower()
+    return stripped in {
+        "不",
+        "不用",
+        "不要",
+        "先不用",
+        "不需要",
+        "no",
+        "n",
+    }
 
-            logger.info("[LLM_INTENT] Round %d — Calling tool: %s with args: %s", _round + 1, tool_name, json.dumps(params, ensure_ascii=False)[:300])
-            result = await execute_tool(tool_name, user_id, user_name, params)
-            result_json = json.dumps(result, ensure_ascii=False)
-            logger.info("[TOOL_RESULT] %s → success=%s %s", tool_name, result.get("success"), result_json[:200])
 
-            last_tool_results.append((tool_name, result_json))
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id", ""),
-                "content": result_json,
-            })
-
-        # Let LLM synthesise a reply (or decide to call more tools).
-        # Use pinned model first; if it fails, hand off to any available model.
-        try:
-            resp_msg, usage2, _ = await provider.chat_completion(messages, tools=tools, model=pinned_model)
-        except httpx.HTTPStatusError:
-            # Pinned model (and all alternatives via retry) exhausted.
-            # Hand off: send tool results as plain text to ANY model (no function calling).
-            logger.warning(
-                "[AGENT] Pinned model %s failed, handing off tool results to fresh model",
-                pinned_model,
-            )
-            resp_msg, usage2 = await _handoff_to_fresh_model(
-                provider, system_prompt, text, last_tool_results,
-            )
-            tool_calls = None
-            break
-
-        if usage2:
-            record_usage(
-                user_id,
-                usage2.get("prompt_tokens", 0),
-                usage2.get("completion_tokens", 0),
-                usage2.get("total_tokens", 0),
-                pinned_model,
-            )
-
-        tool_calls = resp_msg.get("tool_calls")
-        if not tool_calls:
-            break  # LLM produced a final text reply — exit loop
-    else:
-        logger.warning("[AGENT] Hit max tool rounds (%d) for user=%d", MAX_TOOL_ROUNDS, user_id)
-
-    reply = resp_msg.get("content", "操作完成。")
-    logger.info("[OUTPUT] user=%d reply=%s", user_id, reply[:200])
-
-    # Step 7: Update working memory buffer (isolated per chat)
-    mm.add_working_turn(user_id, chat_id, "user", text)
-    mm.add_working_turn(user_id, chat_id, "assistant", reply)
-
+def _remember_and_reply(user_id: int, chat_id: int, user_text: str, reply: str) -> str:
+    _remember_turn(user_id, chat_id, "user", user_text)
+    _remember_turn(user_id, chat_id, "assistant", reply)
     return reply
 
 
-async def _handoff_to_fresh_model(
-    provider,
-    system_prompt: str,
-    user_text: str,
-    tool_results: list[tuple[str, str]],
-) -> tuple[dict, Optional[dict]]:
-    """When the pinned model dies mid-chain, hand off to ANY model.
+def _build_prompt(
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    image_path: Optional[str] = None,
+    caption: str = "",
+) -> str:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
-    Tool results are already available — we just need a model to synthesise
-    a human-readable reply. No function calling needed, so any model works
-    (no thought_signature issues).
-    """
-    # Build tool results as plain text context
-    result_lines = []
-    for name, result_json in tool_results:
-        result_lines.append(f"[{name}]: {result_json}")
-    context = "\n".join(result_lines)
+    if session.interaction_count == 0:
+        _reset_session_history(user_id, session.chat_id)
 
-    handoff_messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_text},
-        {
-            "role": "assistant",
-            "content": f"我已经查到了以下数据：\n{context}\n\n让我来整理一下回复。",
-        },
-        {
-            "role": "user",
-            "content": "请根据上面的数据，用自然语言回复用户。",
-        },
+    history = _format_history(_get_recent_history(user_id, session.chat_id))
+    db_snapshot = _format_db_snapshot(user_id)
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "未配置"
+    chat_kind = "私聊" if session.is_private else "群聊"
+
+    user_block = text.strip() or "用户发送了一张图片，请结合图片判断。"
+    image_hint = ""
+    if image_path:
+        image_hint = (
+            f"\n图片文件: {image_path}\n"
+            f"图片说明: {caption or '无'}\n"
+            "如果是收据或账单图片，请结合图片内容完成记账；如果不是可识别票据，请友好说明。"
+        )
+
+    return f"""你现在是家庭记账 Telegram bot 背后的本地 Codex 执行器。
+
+你的任务是处理一条 Telegram 用户消息，并在必要时通过现有仓库代码管理账本数据库。
+
+必须遵守：
+0. 机器人名字是“小灰毛”；男主人叫“小鸡毛”；女主人叫“小白”。
+1. 你运行在严格 bridge 模式下。默认只允许通过 `app/bridge_ops.py` 读取或写入财务/记忆事实。
+2. 不要直接修改仓库源码，不要自己拼 SQL，不要绕过 `bridge_ops.py` 去拿数字或历史。
+3. 可以运行只针对数据库或查询的短命令，但优先且尽量只使用 `bridge_ops.py`。
+4. 不要执行 git、安装依赖、联网请求、长时间后台进程。
+5. 最终只输出“要发回 Telegram 的中文回复正文”，不要输出分析过程、命令日志、代码块或额外前缀。
+6. 如果需要记账/查询，请直接用仓库里的现有 skills 和数据库；不要假装已经执行。
+7. 当前数据库路径: {DATABASE_PATH}
+8. 默认货币: {CURRENCY}；时区: {TIMEZONE}；地点: {LOCATION}
+9. 家庭成员: {family}
+10. 如果信息不足以安全记账，直接向用户追问，不要猜。
+11. 群聊里注意隐私，用家庭视角回复；私聊可以更自然一些。
+12. 任何包含“金额、次数、历史、趋势、预算、记忆、偏好、目标、上次、最近”的回答，必须以数据库查询或数据库写入为依据。
+13. 如果这一轮你没有亲自查库/落库，就不要给出具体数字、历史事实、偏好判断或“你之前说过”的表述。
+14. 当用户表达稳定偏好、目标、习惯、家庭决定时，不要直接写入记忆。先询问用户是否要记忆，只有在用户明确确认后才写入数据库。
+15. 在这条 Telegram bridge 里，读取或写入财务/记忆事实时，只应使用下面这些白名单 CLI：
+    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}
+    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name <skill_name> --params-json '<json>'
+    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops store-memory --user-id {user_id} ...
+16. 不要为了拿数字或记忆去写临时脚本；不要调用其他 repo 内部入口替代 bridge_ops。
+17. 如果用户只是闲聊、感谢、确认，不要编造账务信息，简短自然回复即可。
+18. 如果用户要删账，优先先用 `query_recent_expenses` 或相关查询确认记录，再用 `delete_expense_by_id` 精准删除；只有明确说“撤销上一笔”时才用 `delete_last_expense`。
+19. 默认把 `regular` 视为日常开销、`special` 视为专项开销。除非用户明确要求“包含专项”，否则月度/周度/预算类回答优先使用默认日常口径。
+20. 如果用户要创建旅行/装修/婚礼等专项计划，优先用 `start_event` 创建 `planning` 状态的计划；只有用户明确说“开始了/进入进行中”时，再把它设为 `active`。
+
+推荐执行方式：
+- 运行只读或短命令时，优先带上 `PYTHONPYCACHEPREFIX=/tmp/pycache python3 ...`，避免 pycache 权限问题。
+- 首选：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}`
+- 首选：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_monthly_total --params-json '{{"scope":"me"}}'`
+- 看最近账目：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_recent_expenses --params-json '{{"scope":"me","limit":10}}'`
+- 查预算变更：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_budget_changes --params-json '{{"limit":10}}'`
+
+上下文：
+- 当前时间: {now}
+- 用户ID: {user_id}
+- 用户名: {user_name}
+- 会话类型: {chat_kind}
+- 最近对话:
+{history}
+- 当前数据库快照:
+{db_snapshot}
+{image_hint}
+
+本次用户消息：
+{user_block}
+"""
+
+
+async def _run_codex(prompt: str, image_path: Optional[str] = None) -> str:
+    db_dir = os.path.dirname(os.path.abspath(DATABASE_PATH)) or "."
+    args = [
+        CODEX_BIN,
+        "exec",
+        "--full-auto",
+        "--sandbox",
+        "workspace-write",
+        "--cd",
+        CODEX_WORKDIR,
+        "--add-dir",
+        db_dir,
+        "--output-last-message",
     ]
 
-    # No tools=... → plain chat, any model can handle this
-    resp_msg, usage, model_used = await provider.chat_completion(handoff_messages)
-    logger.info("[AGENT] Handoff to %s succeeded", model_used)
-    return resp_msg, usage
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+    output_path = tmp.name
+    tmp.close()
+    args.append(output_path)
+    args.extend(["--color", "never", "--ephemeral"])
 
+    if CODEX_PROFILE:
+        args.extend(["--profile", CODEX_PROFILE])
+    if CODEX_MODEL:
+        args.extend(["--model", CODEX_MODEL])
+    if image_path:
+        args.extend(["--image", image_path])
 
-# ═══════════════════════════════════════════
-#  Image (Receipt OCR) handling
-# ═══════════════════════════════════════════
-
-async def agent_handle_image(
-    image_url: str, caption: str, user_id: int, user_name: str
-) -> str:
-    """Handle an image message: OCR → record expenses."""
-    if not LLM_API_KEY or not is_within_limit():
-        return "📷 收据识别需要 LLM API，当前不可用。请手动输入记账信息。"
-
-    vision = _get_vision_provider()
-    if vision is None:
-        return "📷 Vision 模型未配置，无法识别收据。"
+    args.append(prompt)
+    logger.info("[CODEX] Executing local Codex CLI")
 
     try:
-        builder = _get_prompt_builder()
-        vision_prompt = builder.build_vision()
-        prompt = caption.strip() if caption else "请识别这张图片中的消费信息"
-
-        content, usage = await vision.chat_completion_with_image(
-            text=prompt,
-            image_url=image_url,
-            system_prompt=vision_prompt,
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=CODEX_WORKDIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "CODEX_HOME": CODEX_HOME},
         )
-        if usage:
-            record_usage(
-                user_id,
-                usage.get("prompt_tokens", 0),
-                usage.get("completion_tokens", 0),
-                usage.get("total_tokens", 0),
-                LLM_MODEL,
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CODEX_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            logger.error("[CODEX] Timed out after %ss", CODEX_TIMEOUT_SECONDS)
+            return "这次处理超时了，请稍后再试一次。"
+
+        if proc.returncode != 0:
+            logger.error(
+                "[CODEX] Exit=%s stdout=%s stderr=%s",
+                proc.returncode,
+                stdout.decode("utf-8", errors="ignore")[:500],
+                stderr.decode("utf-8", errors="ignore")[:500],
             )
+            return "本地 Codex 处理失败了，请稍后再试。"
 
-        content = content.strip()
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
+        try:
+            with open(output_path, "r", encoding="utf-8") as fh:
+                message = fh.read().strip()
+        except FileNotFoundError:
+            logger.error("[CODEX] Output file missing")
+            return "本地 Codex 没有返回结果，请稍后再试。"
 
-        items = json.loads(content)
-        if not isinstance(items, list):
-            items = [items]
-
-        if items and items[0].get("error"):
-            return f"📷 无法识别图片中的消费信息：{items[0]['error']}\n请手动输入。"
-
-        # ── Robust validation: filter out malformed / zero-amount items ──
-        valid_items: list[dict] = []
-        skipped = 0
-        for item in items:
-            if not isinstance(item, dict):
-                skipped += 1
-                continue
-            # Amount must be present and positive
-            try:
-                amt = float(item.get("amount", 0))
-            except (TypeError, ValueError):
-                skipped += 1
-                continue
-            if amt <= 0:
-                logger.warning("[OCR_SKIP] amount <= 0: %s", item)
-                skipped += 1
-                continue
-            # Category must be a non-empty string
-            cat = item.get("category")
-            if not cat or not isinstance(cat, str):
-                item["category"] = "其他"
-            # Note fallback
-            if not item.get("note") or not isinstance(item.get("note"), str):
-                item["note"] = "收据"
-            valid_items.append(item)
-
-        if not valid_items:
-            msg = "📷 未能从图片中提取到有效消费信息，请手动输入。"
-            if skipped:
-                msg += f"\n（识别到 {skipped} 条数据但无法解析）"
-            return msg
-
-        replies = []
-        for item in valid_items:
-            result = await execute_tool("record_expense", user_id, user_name, {
-                "category": item.get("category", "其他"),
-                "amount": float(item["amount"]),
-                "note": item.get("note", "收据"),
-                "currency": item.get("currency", CURRENCY),
-            })
-            if result.get("success"):
-                cur = result.get("currency", CURRENCY)
-                line = f"✅ {result['category']}  {result['amount']:.2f} {cur}"
-                if result.get("note"):
-                    line += f"（{result['note']}）"
-                if result.get("amount_sgd") and cur != CURRENCY:
-                    line += f" → {result['amount_sgd']:.2f} {CURRENCY}（参考汇率）"
-                replies.append(line)
-                if result.get("budget_alert"):
-                    replies.append(result["budget_alert"])
-
-        if replies:
-            header = "📷 收据识别成功！\n\n"
-            if skipped:
-                header += f"⚠️ 跳过了 {skipped} 条无法解析的数据\n\n"
-            return header + "\n".join(replies)
-        return "📷 未能从图片中提取到消费信息，请手动输入。"
-
-    except Exception:
-        logger.exception("Receipt OCR failed")
-        return "📷 收据识别失败，请手动输入记账信息。"
+        return message or "操作完成。"
+    finally:
+        try:
+            os.unlink(output_path)
+        except FileNotFoundError:
+            pass
 
 
-# ═══════════════════════════════════════════
-#  CSV export helper
-# ═══════════════════════════════════════════
+async def agent_handle(text: str, user_id: int, user_name: str, session: Session) -> str:
+    if session.interaction_count == 0:
+        _reset_session_history(user_id, session.chat_id)
+
+    pending_key = (user_id, session.chat_id)
+    pending = _PENDING_MEMORY.get(pending_key)
+    if pending:
+        if _is_yes_confirmation(text):
+            memory_id = store_memory(
+                int(pending["target_user_id"]),
+                str(pending["content"]),
+                category=str(pending["category"]),
+                importance=int(pending["importance"]),
+            )
+            _PENDING_MEMORY.pop(pending_key, None)
+            scope = "家庭共享记忆" if pending.get("shared") else "个人记忆"
+            reply = (
+                f"好，我已经记下来了。\n"
+                f"已更新：#{memory_id} [{pending['category']}] {pending['content']}\n"
+                f"类型：{scope}"
+            )
+            return _remember_and_reply(user_id, session.chat_id, text, reply)
+        if _is_no_confirmation(text):
+            _PENDING_MEMORY.pop(pending_key, None)
+            reply = "好，这条我先不记。之后如果你想记下来，直接再告诉我一遍就行。"
+            return _remember_and_reply(user_id, session.chat_id, text, reply)
+        _PENDING_MEMORY.pop(pending_key, None)
+
+    memory_candidate = _detect_memory_candidate(user_id, text)
+    if memory_candidate:
+        if memory_candidate.get("duplicate"):
+            reply = f"这条信息我已经记着了：{memory_candidate['content']}"
+            return _remember_and_reply(user_id, session.chat_id, text, reply)
+
+        _PENDING_MEMORY[pending_key] = memory_candidate
+        scope = "家庭共享记忆" if memory_candidate.get("shared") else "个人记忆"
+        reply = (
+            f"我发现这句话可能值得记忆：\n"
+            f"[{memory_candidate['category']}] {memory_candidate['content']}\n"
+            f"准备写入：{scope}\n"
+            "要我记下来吗？回复“是”或“不要”即可。"
+        )
+        return _remember_and_reply(user_id, session.chat_id, text, reply)
+
+    prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
+    reply = await _run_codex(prompt)
+    return _remember_and_reply(user_id, session.chat_id, text, reply)
+
+
+async def agent_handle_image(
+    image_path: str,
+    caption: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+) -> str:
+    if session.interaction_count == 0:
+        _reset_session_history(user_id, session.chat_id)
+    prompt = _build_prompt(
+        text=caption,
+        user_id=user_id,
+        user_name=user_name,
+        session=session,
+        image_path=image_path,
+        caption=caption,
+    )
+    reply = await _run_codex(prompt, image_path=image_path)
+    return _remember_and_reply(user_id, session.chat_id, caption or "[图片]", reply)
+
 
 async def agent_handle_export(user_id: int, user_name: str, scope: str = "me") -> Optional[str]:
-    """Handle /export command. Returns CSV content or None."""
     result = await execute_tool("export_csv", user_id, user_name, {"scope": scope})
     if result.get("success"):
         return result.get("csv_content", "")
     return None
-
-
-# ═══════════════════════════════════════════
-#  Regex fallback (when LLM is unavailable)
-# ═══════════════════════════════════════════
-
-_EXPENSE_RE = re.compile(r"^(.+?)\s*(\d+(?:\.\d+)?)\s*元?$")
-
-_CATEGORY_KEYWORDS: dict[str, str] = {
-    "饭": "餐饮", "餐": "餐饮", "吃": "餐饮", "食": "餐饮",
-    "奶茶": "餐饮", "咖啡": "餐饮", "外卖": "餐饮", "零食": "餐饮",
-    "车": "交通", "地铁": "交通", "公交": "交通", "打车": "交通",
-    "买": "购物", "购": "购物", "超市": "购物",
-    "电影": "娱乐", "游戏": "娱乐",
-    "水电": "生活", "房租": "生活", "话费": "生活",
-    "药": "医疗", "医": "医疗",
-}
-
-
-def _guess_category(note: str) -> str:
-    for keyword, cat in _CATEGORY_KEYWORDS.items():
-        if keyword in note:
-            return cat
-    return "其他"
-
-
-async def _fallback_handle(text: str, user_id: int, user_name: str) -> str:
-    text = text.strip()
-
-    detail_keywords = ("明细", "每笔", "每一笔", "逐笔", "条目", "记录")
-    if any(k in text for k in detail_keywords):
-        scope = "me"
-        if any(k in text for k in ("家庭", "总共", "一共")):
-            scope = "family"
-        elif any(k in text for k in ("老婆", "老公", "妻子", "丈夫")):
-            scope = "spouse"
-        from app.config import CATEGORIES
-        cat = None
-        for c in CATEGORIES:
-            if c in text:
-                cat = c
-                break
-        if cat:
-            result = await execute_tool(
-                "query_category_items",
-                user_id,
-                user_name,
-                {"category": cat, "scope": scope, "limit": 20},
-            )
-            return _format_category_items(result)
-
-    if "汇总" in text:
-        scope = "family" if any(k in text for k in ("家庭", "总", "一共")) else "me"
-        if any(k in text for k in ("老婆", "老公", "妻子", "丈夫")):
-            scope = "spouse"
-        result = await execute_tool("query_summary", user_id, user_name, {"scope": scope})
-        return _format_summary(result)
-
-    if "花了多少" in text:
-        scope = "me"
-        if any(k in text for k in ("家庭", "总共", "一共")):
-            scope = "family"
-        elif any(k in text for k in ("老婆", "老公", "妻子", "丈夫")):
-            scope = "spouse"
-        from app.config import CATEGORIES
-        cat = None
-        for c in CATEGORIES:
-            if c in text:
-                cat = c
-                break
-        if cat:
-            result = await execute_tool("query_category_total", user_id, user_name, {"category": cat, "scope": scope})
-            if not result.get("success", True):
-                return result.get("message", "查询失败。")
-            return f"📊 {result['label']}本月{result['category']}支出：{result['total']:.2f} {CURRENCY}"
-        else:
-            result = await execute_tool("query_monthly_total", user_id, user_name, {"scope": scope})
-            if not result.get("success", True):
-                return result.get("message", "查询失败。")
-            return f"📊 {result['label']}本月总支出：{result['total']:.2f} {CURRENCY}"
-
-    if "预算" in text:
-        if any(k in text for k in ("设", "改", "调")):
-            return "⚠️ 设置预算请在 LLM 可用时使用，或使用 /help 查看帮助。"
-        result = await execute_tool("query_budget", user_id, user_name, {})
-        return _format_budget(result)
-
-    m = _EXPENSE_RE.match(text)
-    if m:
-        note = m.group(1).strip()
-        amount = float(m.group(2))
-        category = _guess_category(note)
-        result = await execute_tool("record_expense", user_id, user_name, {
-            "category": category, "amount": amount, "note": note,
-        })
-        reply = f"✅ 已记录\n{result['category']}  {result['amount']:.2f} {CURRENCY}"
-        if result.get("note"):
-            reply += f"（{result['note']}）"
-        if result.get("budget_alert"):
-            reply += f"\n\n{result['budget_alert']}"
-        return reply
-
-    return "🤔 无法识别您的消息。请输入记账信息或查询指令，输入 /help 查看帮助。"
-
-
-def _format_summary(result: dict) -> str:
-    if not result.get("success", True):
-        return result.get("message", "查询失败。")
-    summary = result.get("summary", [])
-    if not summary:
-        return f"📊 {result['label']}本月暂无支出记录。"
-    lines = [f"📊 {result['label']} · 本月支出汇总\n"]
-    for item in summary:
-        lines.append(f"  {item['category']}：{item['total']:.2f} {CURRENCY}")
-    lines.append(f"\n💰 合计：{result['grand_total']:.2f} {CURRENCY}")
-    return "\n".join(lines)
-
-
-def _format_budget(result: dict) -> str:
-    budgets = result.get("budgets", [])
-    if not budgets:
-        return "📋 尚未设置任何预算。"
-    lines = ["📋 预算使用情况\n"]
-    for b in budgets:
-        status = "🔴 超支" if b["over_budget"] else "🟢 正常"
-        lines.append(
-            f"  {b['category']}：{b['spent']:.2f}/{b['monthly_limit']:.2f} {CURRENCY} "
-            f"（剩余 {b['remaining']:.2f}）{status}"
-        )
-    return "\n".join(lines)
-
-
-def _format_category_items(result: dict) -> str:
-    if not result.get("success", True):
-        return result.get("message", "查询失败。")
-
-    items = result.get("items", [])
-    if not items:
-        return f"📋 {result['label']}本月{result['category']}暂无支出记录。"
-
-    lines = [f"📋 {result['label']} · 本月{result['category']}明细\n"]
-    for item in items:
-        note = item.get("note") or "无备注"
-        amount = item.get("amount_sgd", item.get("amount", 0))
-        line = f"  #{item['id']} {note}：{amount:.2f} {CURRENCY}"
-        if item.get("event_tag"):
-            line += f" [{item['event_tag']}]"
-        if result["label"] == "家庭":
-            line += f" · {item.get('user_name', '')}"
-        lines.append(line)
-    lines.append(f"\n共 {result['count']} 笔")
-    return "\n".join(lines)

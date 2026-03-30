@@ -16,11 +16,13 @@ from telegram.ext import ContextTypes
 from zoneinfo import ZoneInfo
 
 from app.config import ALLOWED_USER_IDS, CURRENCY, FAMILY_MEMBERS, TIMEZONE
-from app.core.memory import get_recent_memories, store_memory
+from app.core.memory import get_recent_memories
+from app.database import get_connection
 from app.services.stats_service import (
     archive_month,
     get_category_total,
-    get_month_summary,
+    get_last_n_days_summary,
+    get_monthly_archive,
     get_month_total,
     get_spouse_id,
 )
@@ -54,16 +56,16 @@ def _build_weekly_report(user_id: int) -> str:
     """Build a weekly report message for a specific user."""
     name = FAMILY_MEMBERS.get(user_id, str(user_id))
 
-    my_summary = get_month_summary([user_id])
+    my_summary = get_last_n_days_summary(7, [user_id])
     my_total = sum(item["total"] for item in my_summary)
 
-    family_summary = get_month_summary(None)
+    family_summary = get_last_n_days_summary(7, None)
     family_total = sum(item["total"] for item in family_summary)
 
     lines = ["📅 *每周财务报告*\n"]
 
     # Personal
-    lines.append(f"👤 *{name}（本月累计）*")
+    lines.append(f"👤 *{name}（最近7天）*")
     if my_summary:
         for item in my_summary:
             lines.append(f"  {item['category']}：{item['total']:.2f} {CURRENCY}")
@@ -75,9 +77,9 @@ def _build_weekly_report(user_id: int) -> str:
     spouse_id = get_spouse_id(user_id)
     if spouse_id is not None:
         spouse_name = FAMILY_MEMBERS.get(spouse_id, str(spouse_id))
-        sp_summary = get_month_summary([spouse_id])
+        sp_summary = get_last_n_days_summary(7, [spouse_id])
         sp_total = sum(item["total"] for item in sp_summary)
-        lines.append(f"\n👫 *{spouse_name}（本月累计）*")
+        lines.append(f"\n👫 *{spouse_name}（最近7天）*")
         if sp_summary:
             for item in sp_summary:
                 lines.append(f"  {item['category']}：{item['total']:.2f} {CURRENCY}")
@@ -86,10 +88,9 @@ def _build_weekly_report(user_id: int) -> str:
             lines.append("  暂无记录")
 
     # Family total
-    lines.append(f"\n👨‍👩‍👧 *家庭合计*：{family_total:.2f} {CURRENCY}")
+    lines.append(f"\n👨‍👩‍👧 *家庭最近7天合计*：{family_total:.2f} {CURRENCY}")
 
     # Budget check (family-shared: user_id=0)
-    from app.database import get_connection
     with get_connection() as conn:
         budget_rows = conn.execute(
             "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
@@ -150,11 +151,10 @@ def _build_proactive_nudge(user_id: int) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
 
-    my_summary = get_month_summary([user_id])
+    my_summary = get_last_n_days_summary(7, [user_id])
     my_total = sum(item["total"] for item in my_summary)
 
     # Check budget status (family-shared: user_id=0)
-    from app.database import get_connection
     with get_connection() as conn:
         budget_rows = conn.execute(
             "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
@@ -191,7 +191,7 @@ def _build_proactive_nudge(user_id: int) -> str:
     lines = [f"👋 {name}，周末快乐！\n"]
 
     # Week spending overview
-    lines.append(f"📊 本月目前花了 *{my_total:.2f} {CURRENCY}*")
+    lines.append(f"📊 最近7天花了 *{my_total:.2f} {CURRENCY}*")
     if my_summary:
         top_cat = my_summary[0]
         lines.append(f"  最大开销：{top_cat['category']}（{top_cat['total']:.2f} {CURRENCY}）")
@@ -244,39 +244,70 @@ async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     from app.database import get_connection
 
-    for user_id in recipients:
-        try:
-            alerts = []
+    try:
+        alerts = []
+        with get_connection() as conn:
+            budget_rows = conn.execute(
+                "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
+            ).fetchall()
+            tz = ZoneInfo(TIMEZONE)
+            now = datetime.now(tz)
+            current_year = now.year
+            current_month = now.month
+
+        for row in budget_rows:
+            cat = row["category"]
+            limit_val = float(row["monthly_limit"])
+            if cat == "_total":
+                spent = get_month_total(None)  # family total
+                cat_label = "家庭总预算"
+            else:
+                spent = get_category_total(cat, None)
+                cat_label = f"家庭{cat}"
+
+            pct = spent / limit_val * 100 if limit_val > 0 else 0
+
+            alert_level = None
+            alert_text = ""
+            if pct > 100:
+                alert_level = "over"
+                alert_text = f"🔴 {cat_label}已超支！（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）"
+            elif pct >= 90:
+                alert_level = "near_limit"
+                alert_text = f"🟡 {cat_label}即将用完（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）"
+
+            if not alert_level:
+                continue
+
             with get_connection() as conn:
-                budget_rows = conn.execute(
-                    "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
-                ).fetchall()
+                already_sent = conn.execute(
+                    "SELECT 1 FROM budget_alert_events "
+                    "WHERE year = ? AND month = ? AND category = ? AND alert_level = ?",
+                    (current_year, current_month, cat, alert_level),
+                ).fetchone()
+                if already_sent:
+                    continue
+                conn.execute(
+                    "INSERT INTO budget_alert_events (year, month, category, alert_level, sent_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (current_year, current_month, cat, alert_level, now.isoformat()),
+                )
+                conn.commit()
+            alerts.append(alert_text)
 
-            for row in budget_rows:
-                cat = row["category"]
-                limit_val = float(row["monthly_limit"])
-                if cat == "_total":
-                    spent = get_month_total(None)  # family total
-                    cat_label = "家庭总预算"
-                else:
-                    spent = get_category_total(cat, None)
-                    cat_label = f"家庭{cat}"
+        if not alerts:
+            return
 
-                pct = spent / limit_val * 100 if limit_val > 0 else 0
-
-                if pct >= 100:
-                    alerts.append(f"🔴 {cat_label}已超支！（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）")
-                elif pct >= 90:
-                    alerts.append(f"🟡 {cat_label}即将用完（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）")
-
-            if alerts:
+        for user_id in recipients:
+            try:
                 name = FAMILY_MEMBERS.get(user_id, str(user_id))
                 msg = f"⚠️ *{name}，家庭预算预警*\n\n" + "\n".join(alerts) + "\n\n注意控制接下来的支出哦！"
                 await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                 logger.info("Budget alert sent to user %s: %d alerts", user_id, len(alerts))
-
-        except Exception:
-            logger.exception("Failed to check budget for user %s", user_id)
+            except Exception:
+                logger.exception("Failed to send budget alert to user %s", user_id)
+    except Exception:
+        logger.exception("Failed to compute budget alerts")
 
 
 # ═══════════════════════════════════════════
@@ -306,16 +337,86 @@ async def monthly_archive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         # Notify family members
         recipients = ALLOWED_USER_IDS if ALLOWED_USER_IDS else list(FAMILY_MEMBERS.keys())
         if recipients and count > 0:
-            msg = (
-                f"📦 *{year}年{month}月账单已归档*\n\n"
-                f"共 {count} 条汇总记录已保存。\n"
-                "随时可以问我「上个月花了多少」来查看！"
-            )
             for uid in recipients:
                 try:
+                    msg = _build_monthly_report(uid, year, month, count)
                     await context.bot.send_message(chat_id=uid, text=msg, parse_mode="Markdown")
                 except Exception:
                     logger.exception("Failed to send archive notification to %s", uid)
 
     except Exception:
         logger.exception("Monthly archive job failed for %04d-%02d", year, month)
+
+
+def _build_monthly_report(user_id: int, year: int, month: int, archived_count: int) -> str:
+    """Build a real monthly summary from archived rows."""
+    name = FAMILY_MEMBERS.get(user_id, str(user_id))
+    my_rows = get_monthly_archive(year, month, user_id=user_id)
+    my_total = sum(r["total"] for r in my_rows)
+
+    spouse_id = get_spouse_id(user_id)
+    spouse_rows = get_monthly_archive(year, month, user_id=spouse_id) if spouse_id is not None else []
+    spouse_total = sum(r["total"] for r in spouse_rows)
+
+    family_rows = get_monthly_archive(year, month, user_id=None)
+    family_total = sum(r["total"] for r in family_rows)
+
+    lines = [f"📦 *{year}年{month}月总结*\n"]
+    lines.append(f"👤 *{name}*：{my_total:.2f} {CURRENCY}")
+    for row in my_rows[:5]:
+        lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
+
+    if spouse_id is not None:
+        spouse_name = FAMILY_MEMBERS.get(spouse_id, str(spouse_id))
+        lines.append(f"\n👫 *{spouse_name}*：{spouse_total:.2f} {CURRENCY}")
+        for row in spouse_rows[:5]:
+            lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
+
+    lines.append(f"\n👨‍👩‍👧 *家庭合计*：{family_total:.2f} {CURRENCY}")
+    for row in family_rows[:5]:
+        lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
+
+    monthly_memories = _get_monthly_memories(user_id, year, month, limit=5)
+    if monthly_memories:
+        lines.append("\n🧠 *相关提醒*")
+        for memory in monthly_memories[:2]:
+            lines.append(f"  💡 {memory['content']}")
+
+    lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
+    lines.append("现在你可以直接问我：上个月花了多少、上个月餐饮花了多少。")
+    return "\n".join(lines)
+
+
+def _get_monthly_memories(user_id: int, year: int, month: int, limit: int = 5) -> list[dict]:
+    """Return only memories created within the target month."""
+    tz = ZoneInfo(TIMEZONE)
+    start = datetime(year, month, 1, tzinfo=tz)
+    if month == 12:
+        end = datetime(year + 1, 1, 1, tzinfo=tz)
+    else:
+        end = datetime(year, month + 1, 1, tzinfo=tz)
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, user_id, content, category, importance, created_at "
+            "FROM episodic_memories "
+            "WHERE user_id IN (?, 0) "
+            "AND category IN ('goal', 'decision') "
+            "AND datetime(created_at) >= datetime(?) "
+            "AND datetime(created_at) < datetime(?) "
+            "ORDER BY importance DESC, datetime(created_at) DESC "
+            "LIMIT ?",
+            (user_id, start.isoformat(), end.isoformat(), limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "content": row["content"],
+            "category": row["category"],
+            "importance": row["importance"],
+            "created_at": row["created_at"],
+            "scope": "family" if row["user_id"] == 0 else "personal",
+        }
+        for row in rows
+    ]

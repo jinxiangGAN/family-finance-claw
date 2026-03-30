@@ -7,12 +7,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "start_event",
-            "description": "Start an event/trip tag. Once active, all subsequent expenses are automatically tagged with this event. Call when user says 'start Japan trip', 'begin event XX', etc.",
+            "description": "Create or activate an event/trip plan. Planning events can exist before the trip begins; active events auto-tag subsequent related expenses.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tag": {"type": "string", "description": "Event tag name, e.g., 'Japan Trip', 'Chinese New Year'"},
                     "description": {"type": "string", "description": "Optional event description"},
+                    "status": {"type": "string", "description": "planning, active, or closed", "enum": ["planning", "active", "closed"]},
+                    "activate": {"type": "boolean", "description": "Whether to set this as the current active event"},
                 },
                 "required": ["tag"],
             },

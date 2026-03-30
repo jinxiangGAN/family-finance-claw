@@ -24,6 +24,68 @@ def _month_range() -> tuple[str, str]:
     return start.isoformat(), end.isoformat()
 
 
+def _range_summary(
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+    start: str = "",
+    end: str = "",
+) -> list[dict]:
+    sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
+    ledger_clause = "" if include_special else "AND ledger_type = 'regular' "
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        sql = (
+            f"SELECT category, {sum_expr} AS total FROM expenses "
+            f"WHERE user_id IN ({placeholders}) "
+            f"{ledger_clause}"
+            f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
+            f"GROUP BY category ORDER BY total DESC"
+        )
+        params = [*user_ids, start, end]
+    else:
+        sql = (
+            f"SELECT category, {sum_expr} AS total FROM expenses "
+            f"WHERE 1=1 {ledger_clause}"
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
+            "GROUP BY category ORDER BY total DESC"
+        )
+        params = [start, end]
+
+    with get_connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [{"category": r["category"], "total": float(r["total"])} for r in rows]
+
+
+def _range_total(
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+    start: str = "",
+    end: str = "",
+) -> float:
+    sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
+    ledger_clause = "" if include_special else "AND ledger_type = 'regular' "
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        sql = (
+            f"SELECT {sum_expr} AS total FROM expenses "
+            f"WHERE user_id IN ({placeholders}) "
+            f"{ledger_clause}"
+            f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
+        )
+        params = [*user_ids, start, end]
+    else:
+        sql = (
+            f"SELECT {sum_expr} AS total FROM expenses "
+            f"WHERE 1=1 {ledger_clause}"
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
+        )
+        params = [start, end]
+
+    with get_connection() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return float(row["total"])
+
+
 def get_spouse_id(my_user_id: int) -> Optional[int]:
     """Return the other family member's user_id, or None if not configured."""
     for uid in FAMILY_MEMBERS:
@@ -55,50 +117,38 @@ def resolve_user_ids(scope: str, my_user_id: int) -> Optional[list[int]]:
         return None
 
 
-def get_month_total(user_ids: Optional[list[int]] = None) -> float:
+def get_month_total(user_ids: Optional[list[int]] = None, include_special: bool = False) -> float:
     """Get total expense amount (in default currency) for the current month.
 
     Uses amount_sgd for multi-currency support, falling back to amount for old data.
     """
     start, end = _month_range()
-    # Use amount_sgd if available; fall back to amount for old rows where amount_sgd=0
-    sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
-    if user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        sql = (
-            f"SELECT {sum_expr} AS total FROM expenses "
-            f"WHERE user_id IN ({placeholders}) "
-            f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
-        )
-        params = [*user_ids, start, end]
-    else:
-        sql = (
-            f"SELECT {sum_expr} AS total FROM expenses "
-            "WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
-        )
-        params = [start, end]
-
-    with get_connection() as conn:
-        row = conn.execute(sql, params).fetchone()
-    return float(row["total"])
+    return _range_total(user_ids=user_ids, include_special=include_special, start=start, end=end)
 
 
-def get_category_total(category: str, user_ids: Optional[list[int]] = None) -> float:
+def get_category_total(
+    category: str,
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+) -> float:
     """Get total expense amount for a specific category in the current month."""
     start, end = _month_range()
     sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
+    ledger_clause = "" if include_special else "AND ledger_type = 'regular' "
     if user_ids:
         placeholders = ",".join("?" for _ in user_ids)
         sql = (
             f"SELECT {sum_expr} AS total FROM expenses "
             f"WHERE user_id IN ({placeholders}) AND category = ? "
+            f"{ledger_clause}"
             f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
         )
         params = [*user_ids, category, start, end]
     else:
         sql = (
             f"SELECT {sum_expr} AS total FROM expenses "
-            "WHERE category = ? AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
+            f"WHERE category = ? {ledger_clause}"
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
         )
         params = [category, start, end]
 
@@ -107,33 +157,53 @@ def get_category_total(category: str, user_ids: Optional[list[int]] = None) -> f
     return float(row["total"])
 
 
-def get_month_summary(user_ids: Optional[list[int]] = None) -> list[dict]:
+def get_month_summary(user_ids: Optional[list[int]] = None, include_special: bool = False) -> list[dict]:
     """Get per-category summary for the current month.
 
     Returns a list of {"category": str, "total": float} sorted by total descending.
     """
     start, end = _month_range()
-    sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
-    if user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        sql = (
-            f"SELECT category, {sum_expr} AS total FROM expenses "
-            f"WHERE user_id IN ({placeholders}) "
-            f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
-            f"GROUP BY category ORDER BY total DESC"
-        )
-        params = [*user_ids, start, end]
-    else:
-        sql = (
-            f"SELECT category, {sum_expr} AS total FROM expenses "
-            "WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
-            "GROUP BY category ORDER BY total DESC"
-        )
-        params = [start, end]
+    return _range_summary(user_ids=user_ids, include_special=include_special, start=start, end=end)
 
-    with get_connection() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return [{"category": r["category"], "total": float(r["total"])} for r in rows]
+
+def get_last_n_days_total(
+    days: int,
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+) -> float:
+    """Get total expense amount for the trailing N-day window."""
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    end = now
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    from datetime import timedelta
+    start = start - timedelta(days=max(days - 1, 0))
+    return _range_total(
+        user_ids=user_ids,
+        include_special=include_special,
+        start=start.isoformat(),
+        end=end.isoformat(),
+    )
+
+
+def get_last_n_days_summary(
+    days: int,
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+) -> list[dict]:
+    """Get category summary for the trailing N-day window."""
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    end = now
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    from datetime import timedelta
+    start = start - timedelta(days=max(days - 1, 0))
+    return _range_summary(
+        user_ids=user_ids,
+        include_special=include_special,
+        start=start.isoformat(),
+        end=end.isoformat(),
+    )
 
 
 # ═══════════════════════════════════════════
@@ -165,7 +235,8 @@ def archive_month(year: int, month: int) -> int:
         # ── Per-user breakdown ──
         rows = conn.execute(
             f"SELECT user_id, category, {sum_expr} AS total FROM expenses "
-            "WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
+            "WHERE ledger_type = 'regular' "
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
             "GROUP BY user_id, category",
             (start, end),
         ).fetchall()
@@ -184,7 +255,8 @@ def archive_month(year: int, month: int) -> int:
         # ── Family total (user_id=0) ──
         fam_rows = conn.execute(
             f"SELECT category, {sum_expr} AS total FROM expenses "
-            "WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
+            "WHERE ledger_type = 'regular' "
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) "
             "GROUP BY category",
             (start, end),
         ).fetchall()

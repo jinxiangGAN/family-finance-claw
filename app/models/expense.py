@@ -17,6 +17,7 @@ class Expense:
     currency: str = "SGD"
     amount_sgd: float = 0.0
     event_tag: str = ""
+    ledger_type: str = "regular"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     id: Optional[int] = None
 
@@ -31,6 +32,7 @@ class Expense:
             "amount_sgd": self.amount_sgd,
             "note": self.note,
             "event_tag": self.event_tag,
+            "ledger_type": self.ledger_type,
             "created_at": self.created_at,
         }
 

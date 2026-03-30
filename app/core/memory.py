@@ -117,10 +117,20 @@ class MemoryManager:
         # Per-(user, chat) working memory — isolates private vs group context
         self._working: dict[tuple[int, int], WorkingMemory] = defaultdict(WorkingMemory)
 
-    # ─── Tier 1: Core Profile (family-shared, user_id=0) ───
+    # ─── Tier 1: Core Profile (personal + family-shared) ───
 
-    def load_profile(self, user_id: int) -> CoreProfile:
-        """Load family-shared profile from DB (user_id=0)."""
+    def load_personal_profile(self, user_id: int) -> CoreProfile:
+        """Load the personal profile for one user."""
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM core_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchall()
+        data = {r["key"]: r["value"] for r in rows}
+        return CoreProfile(user_id=user_id, data=data)
+
+    def load_shared_profile(self) -> CoreProfile:
+        """Load the family-shared profile."""
         with get_connection() as conn:
             rows = conn.execute(
                 "SELECT key, value FROM core_profiles WHERE user_id = 0",
@@ -128,37 +138,73 @@ class MemoryManager:
         data = {r["key"]: r["value"] for r in rows}
         return CoreProfile(user_id=0, data=data)
 
-    def update_profile(self, user_id: int, key: str, value: str) -> None:
-        """Upsert a family-shared profile entry (stored as user_id=0)."""
+    def load_profile(self, user_id: int) -> CoreProfile:
+        """Load merged profile with personal keys first, then shared keys."""
+        personal = self.load_personal_profile(user_id)
+        shared = self.load_shared_profile()
+        merged = dict(shared.data)
+        merged.update(personal.data)
+        return CoreProfile(user_id=user_id, data=merged)
+
+    def format_profile_context(self, user_id: int) -> str:
+        """Render personal and shared profiles as a prompt fragment."""
+        personal = self.load_personal_profile(user_id)
+        shared = self.load_shared_profile()
+        lines: list[str] = []
+        if personal.data:
+            lines.append("[Personal Profile]")
+            for k, v in personal.data.items():
+                lines.append(f"- {k}: {v}")
+        if shared.data:
+            lines.append("[Family Shared Profile]")
+            for k, v in shared.data.items():
+                lines.append(f"- {k}: {v}")
+        return "\n".join(lines)
+
+    def update_profile(self, user_id: int, key: str, value: str, shared: bool = False) -> None:
+        """Upsert a profile entry for either the user or the family."""
         tz = ZoneInfo(TIMEZONE)
         now = datetime.now(tz).isoformat()
+        target_user_id = 0 if shared else user_id
         with get_connection() as conn:
             conn.execute(
                 "INSERT INTO core_profiles (user_id, key, value, updated_at) "
-                "VALUES (0, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (key, value, now),
+                (target_user_id, key, value, now),
             )
             conn.commit()
-        logger.info("Family profile updated: key=%s value=%s", key, value[:60])
+        logger.info("Profile updated: user_id=%s key=%s value=%s", target_user_id, key, value[:60])
 
-    def delete_profile_key(self, user_id: int, key: str) -> bool:
-        """Delete a family-shared profile entry."""
+    def delete_profile_key(self, user_id: int, key: str, shared: bool = False) -> bool:
+        """Delete a profile entry."""
+        target_user_id = 0 if shared else user_id
         with get_connection() as conn:
             cursor = conn.execute(
-                "DELETE FROM core_profiles WHERE user_id = 0 AND key = ?",
-                (key,),
+                "DELETE FROM core_profiles WHERE user_id = ? AND key = ?",
+                (target_user_id, key),
             )
             conn.commit()
         return cursor.rowcount > 0
 
     def get_all_profile_keys(self, user_id: int) -> list[dict]:
-        """List all family-shared profile keys."""
+        """List personal and shared profile keys with scope metadata."""
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT key, value, updated_at FROM core_profiles WHERE user_id = 0 ORDER BY key",
+                "SELECT user_id, key, value, updated_at FROM core_profiles "
+                "WHERE user_id IN (?, 0) ORDER BY user_id DESC, key",
+                (user_id,),
             ).fetchall()
-        return [{"key": r["key"], "value": r["value"], "updated_at": r["updated_at"]} for r in rows]
+        return [
+            {
+                "key": r["key"],
+                "value": r["value"],
+                "updated_at": r["updated_at"],
+                "scope": "family" if r["user_id"] == 0 else "personal",
+                "user_id": r["user_id"],
+            }
+            for r in rows
+        ]
 
     # ─── Tier 2: Working Memory ───
 
@@ -420,8 +466,7 @@ class MemoryManager:
         parts: list[str] = []
 
         # Tier 1: Core Profile — always injected (cheap, local DB read)
-        profile = self.load_profile(user_id)
-        profile_text = profile.to_prompt()
+        profile_text = self.format_profile_context(user_id)
         if profile_text:
             parts.append(profile_text)
 
@@ -520,7 +565,14 @@ def get_recent_memories(user_id: int, limit: int = 10) -> list[dict]:
     mm = get_memory_manager()
     episodes = mm.get_recent_episodes(user_id, limit)
     return [
-        {"id": e.id, "content": e.content, "category": e.category, "importance": e.importance}
+        {
+            "id": e.id,
+            "content": e.content,
+            "category": e.category,
+            "importance": e.importance,
+            "scope": "family" if e.user_id == 0 else "personal",
+            "user_id": e.user_id,
+        }
         for e in episodes
     ]
 

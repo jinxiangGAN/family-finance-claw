@@ -8,7 +8,7 @@ Tools:
   - get_user_profile   → read user's core profile
 """
 
-from app.core.memory import delete_memory, get_memory_manager
+from app.core.memory import delete_memory, get_memory_manager, get_recent_memories
 
 
 # ═══════════════════════════════════════════
@@ -68,14 +68,15 @@ def _handle_update_user_profile(user_id: int, user_name: str, params: dict) -> d
     """
     key = params.get("key", "").strip()
     value = params.get("value", "").strip()
+    shared = bool(params.get("shared", False))
     if not key or not value:
         return {"success": False, "message": "Both key and value are required"}
 
     mm = get_memory_manager()
-    mm.update_profile(user_id, key, value)
+    mm.update_profile(user_id, key, value, shared=shared)
     return {
         "success": True,
-        "message": f"Updated profile: {key} = {value[:60]}",
+        "message": f"Updated {'family' if shared else 'personal'} profile: {key} = {value[:60]}",
     }
 
 
@@ -87,6 +88,17 @@ def _handle_get_user_profile(user_id: int, user_name: str, params: dict) -> dict
         "success": True,
         "profile": entries,
         "count": len(entries),
+    }
+
+
+def _handle_get_recent_memories(user_id: int, user_name: str, params: dict) -> dict:
+    """Read recent episodic memories from the database."""
+    limit = min(max(int(params.get("limit", 10)), 1), 30)
+    memories = get_recent_memories(user_id, limit=limit)
+    return {
+        "success": True,
+        "memories": memories,
+        "count": len(memories),
     }
 
 
@@ -176,6 +188,7 @@ TOOLS = [
                         ),
                     },
                     "value": {"type": "string", "description": "Profile value description"},
+                    "shared": {"type": "boolean", "description": "If true, write this into the family-shared profile"},
                 },
                 "required": ["key", "value"],
             },
@@ -192,6 +205,19 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_memories",
+            "description": "Retrieve the most recent episodic memories already stored in the database.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "How many recent memories to return, default 10"},
+                },
+            },
+        },
+    },
 ]
 
 HANDLERS = {
@@ -200,4 +226,5 @@ HANDLERS = {
     "forget_memory": _handle_forget_memory,
     "update_user_profile": _handle_update_user_profile,
     "get_user_profile": _handle_get_user_profile,
+    "get_recent_memories": _handle_get_recent_memories,
 }

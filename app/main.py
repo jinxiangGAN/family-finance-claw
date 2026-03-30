@@ -1,9 +1,12 @@
 """Entry point for Family Finance Claw 🦞."""
 
 import logging
+import os
+import shutil
+import subprocess
 import sys
 
-from app.config import LLM_API_KEY, LLM_EMBEDDING_MODEL, LLM_PROVIDER, TELEGRAM_BOT_TOKEN
+from app.config import BOT_BACKEND, CODEX_BIN, CODEX_HOME, CODEX_MODEL, TELEGRAM_BOT_TOKEN
 from app.database import init_db
 from app.bot.handlers import build_application
 
@@ -28,20 +31,32 @@ def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Please check your .env file.")
         sys.exit(1)
-    if not LLM_API_KEY:
-        logger.warning("LLM_API_KEY is not set. Will use regex fallback only.")
-    else:
-        logger.info("LLM provider: %s", LLM_PROVIDER)
-        if LLM_EMBEDDING_MODEL:
-            logger.info("Embedding model: %s (vector memory enabled)", LLM_EMBEDDING_MODEL)
-        else:
-            logger.info("No embedding model configured — using FTS5 for memory recall")
+    logger.info("Bot backend: %s", BOT_BACKEND)
+    logger.info("Codex binary: %s", CODEX_BIN)
+    if CODEX_MODEL:
+        logger.info("Codex model override: %s", CODEX_MODEL)
+    codex_path = shutil.which(CODEX_BIN)
+    if not codex_path:
+        logger.error("Codex binary '%s' not found in PATH.", CODEX_BIN)
+        sys.exit(1)
+    logger.info("Resolved Codex path: %s", codex_path)
+    try:
+        subprocess.run([CODEX_BIN, "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except Exception:
+        logger.exception("Failed to execute Codex CLI")
+        sys.exit(1)
+    if not os.path.isdir(CODEX_HOME):
+        logger.error("CODEX_HOME does not exist: %s", CODEX_HOME)
+        sys.exit(1)
+    if not os.listdir(CODEX_HOME):
+        logger.error("CODEX_HOME is empty: %s. Run 'codex login' first and mount the resulting directory.", CODEX_HOME)
+        sys.exit(1)
 
-    # Initialize database (creates 3-tier memory tables)
+    # Initialize database
     init_db()
 
     # Build and run bot (polling mode)
-    logger.info("Starting Family Finance Claw 🦞 v4 (polling mode)...")
+    logger.info("Starting Family Finance Claw 🦞 (Telegram -> Codex bridge)...")
     app = build_application()
     app.run_polling(drop_pending_updates=True)
 

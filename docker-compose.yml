@@ -5,11 +5,14 @@ services:
     build: .
     container_name: family-finance-bot
     restart: unless-stopped
-    network_mode: host          # 直接用宿主机网络，避免 Docker 桥接 IPv6 超时
     env_file:
       - .env
     volumes:
       # Persist SQLite database on host
       - ./data:/app/data
+      # Persist Codex auth/config/runtime state on host
+      - ./codex-home:/codex-home
     environment:
       - DATABASE_PATH=/app/data/expenses.db
+      - CODEX_HOME=/codex-home
+      - CODEX_WORKDIR=/app

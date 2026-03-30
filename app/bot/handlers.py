@@ -1,9 +1,9 @@
 """Telegram bot handlers (Agent v3: memory + session + proactive)."""
 
-import base64
 import io
 import logging
-import mimetypes
+import os
+import tempfile
 from datetime import datetime, time
 
 from telegram import Update
@@ -17,12 +17,11 @@ from telegram.ext import (
 from zoneinfo import ZoneInfo
 
 from app.core.agent import agent_handle, agent_handle_export, agent_handle_image
-from app.services.api_tracker import get_usage_stats
 from app.config import (
     ALLOWED_USER_IDS,
+    BOT_BACKEND,
     CATEGORIES,
     CURRENCY,
-    LLM_PROVIDER,
     TELEGRAM_BOT_TOKEN,
     TIMEZONE,
     WEEKLY_SUMMARY_DAY,
@@ -80,7 +79,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📷 *收据*：发送照片自动识别\n"
         "📤 *导出*：/export\n\n"
         "📌 *命令*：/help /delete /export /usage /memory\n\n"
-        f"💰 {CURRENCY} | 🤖 {LLM_PROVIDER}",
+        f"💰 {CURRENCY} | 🤖 {BOT_BACKEND}",
         parse_mode="Markdown",
     )
 
@@ -116,7 +115,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "  /delete — 删除最近一条\n"
         "  /export — 导出 CSV\n"
         "  /export family — 导出家庭 CSV\n"
-        "  /usage — API 用量\n"
+        "  /usage — 查看当前桥接模式\n"
         "  /memory — 查看我的记忆\n\n"
         f"*分类*：{cats}\n"
         f"*货币*：{CURRENCY}（支持 CNY/USD/AUD/JPY/MYR/EUR 等）"
@@ -168,23 +167,11 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_access(update):
         return
-    stats = get_usage_stats()
-    if stats["monthly_limit"] > 0:
-        await update.message.reply_text(  # type: ignore[union-attr]
-            f"📉 *LLM API 本月用量*（{LLM_PROVIDER}）\n\n"
-            f"  已用 tokens：{stats['monthly_used']:,}\n"
-            f"  月度上限：{stats['monthly_limit']:,}\n"
-            f"  剩余：{stats['remaining']:,}\n"
-            f"  使用率：{stats['usage_pct']:.1f}%",
-            parse_mode="Markdown",
-        )
-    else:
-        await update.message.reply_text(  # type: ignore[union-attr]
-            f"📉 *LLM API 本月用量*（{LLM_PROVIDER}）\n\n"
-            f"  已用 tokens：{stats['monthly_used']:,}\n"
-            f"  月度上限：无限制",
-            parse_mode="Markdown",
-        )
+    await update.message.reply_text(  # type: ignore[union-attr]
+        "🤖 当前运行模式：Telegram -> 本地 Codex CLI\n\n"
+        "这个版本不再直接调用外部 LLM API；收到消息后会交给本机 Codex 处理，"
+        "再复用仓库里的 skills 和 SQLite 账本。",
+    )
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -203,7 +190,8 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = ["🧠 *我记住的信息*\n"]
     for m in memories:
         prefix = "🔴" if m["importance"] >= 8 else "🟡" if m["importance"] >= 5 else "🟢"
-        lines.append(f"  {prefix} #{m['id']} [{m['category']}] {m['content']}")
+        scope = "家庭" if m.get("scope") == "family" else "个人"
+        lines.append(f"  {prefix} #{m['id']} [{scope}/{m['category']}] {m['content']}")
 
     lines.append("\n💡 说「忘掉 #ID」可以删除某条记忆")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")  # type: ignore[union-attr]
@@ -239,28 +227,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user  # type: ignore[union-attr]
     user_id: int = user.id
     user_name: str = user.full_name or user.username or str(user_id)
+    session = _get_session(update)
 
     photo = update.message.photo[-1]  # type: ignore[union-attr]
     file = await photo.get_file()
-
-    # Download image bytes and build a base64 data URL with correct MIME type.
-    # Gemini rejects plain Telegram file URLs (returns application/octet-stream).
-    img_bytes = await file.download_as_bytearray()
-    # Detect MIME from the file_path extension, fallback to image/jpeg
-    mime_type = "image/jpeg"
-    if file.file_path:
-        guessed, _ = mimetypes.guess_type(file.file_path)
-        if guessed and guessed.startswith("image/"):
-            mime_type = guessed
-    b64 = base64.b64encode(bytes(img_bytes)).decode()
-    image_data_url = f"data:{mime_type};base64,{b64}"
-
     caption = update.message.caption or ""  # type: ignore[union-attr]
+    suffix = ".jpg"
+    if file.file_path:
+        _, ext = os.path.splitext(file.file_path)
+        if ext:
+            suffix = ext
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp_path = tmp.name
+    tmp.close()
 
     await update.message.chat.send_action("typing")  # type: ignore[union-attr]
 
-    reply = await agent_handle_image(image_data_url, caption, user_id, user_name)
-    await update.message.reply_text(reply)  # type: ignore[union-attr]
+    try:
+        await file.download_to_drive(custom_path=tmp_path)
+        reply = await agent_handle_image(tmp_path, caption, user_id, user_name, session)
+        await update.message.reply_text(reply)  # type: ignore[union-attr]
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 # ───────────────── Bot builder ─────────────────

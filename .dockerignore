@@ -1,6 +1,5 @@
 .git
 .env
-*.md
 __pycache__
 *.pyc
 data/
