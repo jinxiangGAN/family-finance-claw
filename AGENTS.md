@@ -37,9 +37,11 @@ This repository powers a Telegram-based family finance bot.
 
 1. If you notice a stable preference, goal, habit, or family decision, ask the user whether it should be remembered.
 2. Do not store a new memory before the user explicitly confirms.
-3. After confirmation, write the memory to the database and reply with exactly what was updated.
+3. After confirmation, rewrite the memory into concise English before writing it to the database, then reply with exactly what was updated.
 4. If the user declines, do not persist the memory.
 5. Distinguish between personal memory and family-shared memory whenever possible.
+6. Stored memory content should be English even if the conversation happened in Chinese.
+7. Prefer archival iteration over hard deletion: when a memory changes, archive the old version and create a new active version.
 
 ## Reply quality
 

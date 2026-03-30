@@ -1,14 +1,15 @@
 """MCP Tool: Enhanced memory system — 3-tier architecture.
 
 Tools:
-  - store_memory       → save an episodic memory (Tier 3) with embedding
-  - recall_memories    → search episodic memories (vector + FTS)
-  - forget_memory      → delete a specific memory
+  - store_memory        → save an episodic memory (Tier 3) with embedding
+  - recall_memories     → search episodic memories (vector + FTS)
+  - forget_memory       → archive a specific memory
+  - update_memory       → replace an existing memory with a new version
   - update_user_profile → upsert core profile (Tier 1) — Agent auto-calls this
-  - get_user_profile   → read user's core profile
+  - get_user_profile    → read user's core profile
 """
 
-from app.core.memory import delete_memory, get_memory_manager, get_recent_memories
+from app.core.memory import delete_memory, get_memory_manager, get_recent_memories, update_memory
 
 
 # ═══════════════════════════════════════════
@@ -50,14 +51,39 @@ async def _handle_recall_memories(user_id: int, user_name: str, params: dict) ->
 
 
 def _handle_forget_memory(user_id: int, user_name: str, params: dict) -> dict:
-    """Delete a specific memory."""
+    """Archive a specific memory."""
     memory_id = int(params.get("memory_id", 0))
     if memory_id <= 0:
         return {"success": False, "message": "Please provide a valid memory_id"}
     deleted = delete_memory(memory_id)
     if deleted:
-        return {"success": True, "message": f"Deleted memory #{memory_id}"}
+        return {"success": True, "message": f"Archived memory #{memory_id}"}
     return {"success": False, "message": f"Memory #{memory_id} not found"}
+
+
+async def _handle_update_memory(user_id: int, user_name: str, params: dict) -> dict:
+    """Replace an existing memory with a new version."""
+    memory_id = int(params.get("memory_id", 0))
+    content = params.get("content", "").strip()
+    if memory_id <= 0 or not content:
+        return {"success": False, "message": "Both memory_id and new content are required"}
+
+    category = params.get("category")
+    importance = params.get("importance")
+    new_memory_id = await update_memory(
+        memory_id,
+        content,
+        category=category,
+        importance=int(importance) if importance is not None else None,
+    )
+    if new_memory_id is None:
+        return {"success": False, "message": f"Active memory #{memory_id} not found"}
+    return {
+        "success": True,
+        "old_memory_id": memory_id,
+        "new_memory_id": new_memory_id,
+        "message": f"Replaced memory #{memory_id} with #{new_memory_id}",
+    }
 
 
 def _handle_update_user_profile(user_id: int, user_name: str, params: dict) -> dict:
@@ -94,7 +120,8 @@ def _handle_get_user_profile(user_id: int, user_name: str, params: dict) -> dict
 def _handle_get_recent_memories(user_id: int, user_name: str, params: dict) -> dict:
     """Read recent episodic memories from the database."""
     limit = min(max(int(params.get("limit", 10)), 1), 30)
-    memories = get_recent_memories(user_id, limit=limit)
+    include_archived = bool(params.get("include_archived", False))
+    memories = get_recent_memories(user_id, limit=limit, include_archived=include_archived)
     return {
         "success": True,
         "memories": memories,
@@ -157,13 +184,30 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "forget_memory",
-            "description": "Delete a specific episodic memory by its ID. Call when the user explicitly asks to forget something.",
+            "description": "Archive a specific episodic memory by its ID. Call when the user explicitly asks to forget something.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "memory_id": {"type": "integer", "description": "The ID of the memory to delete"},
                 },
                 "required": ["memory_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_memory",
+            "description": "Replace an active episodic memory with a newer version while archiving the old one.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "integer", "description": "The existing memory ID to replace"},
+                    "content": {"type": "string", "description": "The new English memory content"},
+                    "category": {"type": "string", "description": "Optional new memory category"},
+                    "importance": {"type": "integer", "description": "Optional new importance level 1-10"},
+                },
+                "required": ["memory_id", "content"],
             },
         },
     },
@@ -214,6 +258,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "description": "How many recent memories to return, default 10"},
+                    "include_archived": {"type": "boolean", "description": "Whether to include archived memories"},
                 },
             },
         },
@@ -224,6 +269,7 @@ HANDLERS = {
     "store_memory": _handle_store_memory,
     "recall_memories": _handle_recall_memories,
     "forget_memory": _handle_forget_memory,
+    "update_memory": _handle_update_memory,
     "update_user_profile": _handle_update_user_profile,
     "get_user_profile": _handle_get_user_profile,
     "get_recent_memories": _handle_get_recent_memories,

@@ -15,7 +15,7 @@ from typing import Optional
 
 from zoneinfo import ZoneInfo
 
-from app.core.memory import get_memory_manager, get_recent_memories, store_memory
+from app.core.memory import delete_memory, get_memory_manager, get_recent_memories, store_memory, update_memory
 from app.config import (
     CODEX_BIN,
     CODEX_HOME,
@@ -73,6 +73,9 @@ _FINANCE_HINT_TOKENS = (
     "旅行",
     "计划",
 )
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_ARCHIVE_MEMORY_RE = re.compile(r"^\s*(?:忘掉|忘记|归档)\s*(?:记忆)?\s*#?(\d+)\s*$")
+_UPDATE_MEMORY_RE = re.compile(r"^\s*(?:把)?记忆\s*#?(\d+)\s*(?:改成|更新成|修改为|替换为)\s*(.+?)\s*$")
 
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
@@ -257,6 +260,69 @@ def _remember_and_reply(user_id: int, chat_id: int, user_text: str, reply: str) 
     return reply
 
 
+def _contains_cjk(text: str) -> bool:
+    return bool(_CJK_RE.search(text))
+
+
+async def _normalize_memory_to_english(content: str, category: str) -> Optional[str]:
+    """Rewrite a memory candidate into concise English for storage."""
+    stripped = content.strip()
+    if not stripped:
+        return None
+    if not _contains_cjk(stripped):
+        return stripped
+
+    prompt = f"""Rewrite the following memory into concise natural English for database storage.
+
+Requirements:
+- Output only the English memory sentence.
+- Keep the meaning intact.
+- Keep it short and specific.
+- Do not add quotes, labels, bullets, explanations, or markdown.
+- Category: {category}
+
+Original memory:
+{stripped}
+"""
+    rewritten = (await _run_codex(prompt)).strip()
+    if not rewritten:
+        return None
+    if _contains_cjk(rewritten):
+        return None
+    return rewritten
+
+
+async def _maybe_handle_memory_admin(text: str, user_id: int) -> Optional[str]:
+    """Handle direct memory archive/update commands before Codex routing."""
+    archive_match = _ARCHIVE_MEMORY_RE.match(text.strip())
+    if archive_match:
+        memory_id = int(archive_match.group(1))
+        deleted = delete_memory(memory_id)
+        if deleted:
+            return f"好，我已经把记忆 #{memory_id} 归档了。"
+        return f"我没有找到仍处于 active 状态的记忆 #{memory_id}。"
+
+    update_match = _UPDATE_MEMORY_RE.match(text.strip())
+    if not update_match:
+        return None
+
+    memory_id = int(update_match.group(1))
+    new_content_raw = update_match.group(2).strip()
+    normalized_content = await _normalize_memory_to_english(new_content_raw, "general")
+    if not normalized_content:
+        return "这条记忆我这次没能稳定转换成英文摘要，所以先没有更新。你可以换个说法再试一次。"
+
+    new_memory_id = await update_memory(memory_id, normalized_content)
+    if new_memory_id is None:
+        return f"我没有找到仍处于 active 状态的记忆 #{memory_id}。"
+
+    return (
+        f"好，我已经更新这条记忆了。\n"
+        f"旧版本：#{memory_id} -> archived\n"
+        f"新版本：#{new_memory_id} -> {normalized_content}"
+    )
+
+
 def _build_prompt(
     text: str,
     user_id: int,
@@ -273,75 +339,76 @@ def _build_prompt(
 
     history = _format_history(_get_recent_history(user_id, session.chat_id))
     db_snapshot = _format_db_snapshot(user_id)
-    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "未配置"
-    chat_kind = "私聊" if session.is_private else "群聊"
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
+    chat_kind = "private chat" if session.is_private else "group chat"
     chat_mode = _detect_chat_mode(text, image_path=image_path)
 
-    user_block = text.strip() or "用户发送了一张图片，请结合图片判断。"
+    user_block = text.strip() or "The user sent an image. Interpret it with the image context."
     image_hint = ""
     if image_path:
         image_hint = (
-            f"\n图片文件: {image_path}\n"
-            f"图片说明: {caption or '无'}\n"
-            "如果是收据或账单图片，请结合图片内容完成记账；如果不是可识别票据，请友好说明。"
+            f"\nImage file: {image_path}\n"
+            f"Image caption: {caption or 'none'}\n"
+            "If this is a receipt or bill image, use it to complete expense handling. "
+            "If it is not a recognizable receipt, reply politely and say so."
         )
 
-    return f"""你现在是家庭记账 Telegram bot 背后的本地 Codex 执行器。
+    return f"""You are the local Codex executor behind a Telegram family finance bot.
 
-你的任务是处理一条 Telegram 用户消息，并在必要时通过现有仓库代码管理账本数据库。
+Your job is to handle one Telegram message and, when needed, use the existing repository code to read or update the finance database.
 
-必须遵守：
-0. 机器人名字是“小灰毛”；男主人叫“小鸡毛”；女主人叫“小白”。
-1. 你运行在严格 bridge 模式下。默认只允许通过 `app/bridge_ops.py` 读取或写入财务/记忆事实。
-2. 不要直接修改仓库源码，不要自己拼 SQL，不要绕过 `bridge_ops.py` 去拿数字或历史。
-3. 可以运行只针对数据库或查询的短命令，但优先且尽量只使用 `bridge_ops.py`。
-4. 不要执行 git、安装依赖、联网请求、长时间后台进程。
-5. 最终只输出“要发回 Telegram 的中文回复正文”，不要输出分析过程、命令日志、代码块或额外前缀。
-6. 如果需要记账/查询，请直接用仓库里的现有 skills 和数据库；不要假装已经执行。
-7. 当前数据库路径: {DATABASE_PATH}
-8. 默认货币: {CURRENCY}；时区: {TIMEZONE}；地点: {LOCATION}
-9. 家庭成员: {family}
-10. 如果信息不足以安全记账，直接向用户追问，不要猜。
-11. 群聊里注意隐私，用家庭视角回复；私聊可以更自然一些。
-12. 任何包含“金额、次数、历史、趋势、预算、记忆、偏好、目标、上次、最近”的回答，必须以数据库查询或数据库写入为依据。
-13. 如果这一轮你没有亲自查库/落库，就不要给出具体数字、历史事实、偏好判断或“你之前说过”的表述。
-14. 当用户表达稳定偏好、目标、习惯、家庭决定时，不要直接写入记忆。先询问用户是否要记忆，只有在用户明确确认后才写入数据库。
-15. 在这条 Telegram bridge 里，读取或写入财务/记忆事实时，只应使用下面这些白名单 CLI：
+Hard rules:
+0. The bot's name is `小灰毛`. The male owner is `小鸡毛`. The female owner is `小白`.
+1. You are running in strict bridge mode. By default, finance and memory facts must be read or written through `app/bridge_ops.py`.
+2. Do not modify repository source code. Do not write ad-hoc SQL. Do not bypass `app/bridge_ops.py` to obtain numbers or history.
+3. Short-lived read/write commands are allowed only for database-backed finance tasks, and you should strongly prefer `app/bridge_ops.py`.
+4. Do not run git commands, install dependencies, make network requests, or start long-lived background processes.
+5. Output only the final Telegram reply body in Simplified Chinese. Do not include analysis, logs, code fences, or prefixes.
+6. If the task is finance-related, use the existing skills and database helpers. Do not pretend an operation was executed if it was not.
+7. Database path: {DATABASE_PATH}
+8. Default currency: {CURRENCY}; timezone: {TIMEZONE}; location: {LOCATION}
+9. Family members: {family}
+10. If the message is not specific enough for safe expense handling, ask a concise follow-up question instead of guessing.
+11. In group chat, protect privacy and answer from a family perspective. In private chat, you may sound a bit more personal and warm.
+12. Any reply involving amounts, counts, history, trends, budgets, memory, preferences, goals, previous events, or recent activity must be grounded in a database read or write in the current turn.
+13. If you did not personally query or update the database in this turn, do not state specific numbers, historical facts, preferences, or claims like "you said before".
+14. When the user expresses a stable preference, goal, habit, or family decision, do not store it immediately. Ask for confirmation first, and only store it after explicit consent.
+15. Inside this Telegram bridge, use only these whitelisted CLI patterns for finance or memory facts:
     - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}
     - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name <skill_name> --params-json '<json>'
     - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops store-memory --user-id {user_id} ...
-16. 不要为了拿数字或记忆去写临时脚本；不要调用其他 repo 内部入口替代 bridge_ops。
-17. 如果用户只是闲聊、感谢、确认，不要编造账务信息，简短自然回复即可。
-18. 如果用户要删账，优先先用 `query_recent_expenses` 或相关查询确认记录，再用 `delete_expense_by_id` 精准删除；只有明确说“撤销上一笔”时才用 `delete_last_expense`。
-19. 默认把 `regular` 视为日常开销、`special` 视为专项开销。除非用户明确要求“包含专项”，否则月度/周度/预算类回答优先使用默认日常口径。
-20. 如果用户要创建旅行/装修/婚礼等专项计划，优先用 `start_event` 创建 `planning` 状态的计划；只有用户明确说“开始了/进入进行中”时，再把它设为 `active`。
-21. 小灰毛有两种工作方式：
-    - `finance mode`：处理记账、预算、历史、记忆、专项计划时，严格查库和落库。
-    - `chat mode`：用户只是闲聊、吐槽、问候、撒娇、求安慰时，可以自然聊天，不必强行扯到账务。
-22. 在 `chat mode` 下，小灰毛要更温和、更有陪伴感，像熟悉家里情况的贴心助手；语气自然、简短、有分寸，不油腻、不说教。
-23. 在 `chat mode` 下，如果用户顺带提到一点消费情绪或生活状态，可以轻轻回应；只有当用户明确问金额、历史、预算、记录时，才切回 `finance mode` 查库。
-24. 如果一句话同时包含闲聊和账务诉求，优先先温和回应一句，再处理账务部分。
+16. Do not write temporary scripts just to fetch numbers or memory. Do not use other repository entrypoints instead of `bridge_ops`.
+17. If the user is only chatting, thanking you, venting, or confirming something, do not fabricate finance facts. Reply naturally and briefly.
+18. If the user wants to delete an expense, prefer checking records with `query_recent_expenses` first and then use `delete_expense_by_id`. Use `delete_last_expense` only for explicit "undo last expense" requests.
+19. Treat `regular` as day-to-day spending and `special` as project/event spending. Unless the user explicitly asks to include special spending, monthly, weekly, and budget-related answers should default to the regular ledger.
+20. If the user wants to create a trip, renovation, wedding, or other special plan, prefer using `start_event` with `planning` status first. Only switch it to `active` when the user clearly says it has started.
+21. `小灰毛` has two reply modes:
+    - `finance mode`: strict, database-grounded handling for expenses, budgets, history, memory, and special plans.
+    - `chat mode`: warm, light, natural conversation for casual family chatting, venting, greetings, or comfort.
+22. In `chat mode`, `小灰毛` should feel gentle, familiar, and supportive, like a thoughtful household assistant. Stay natural, brief, and not overly theatrical.
+23. In `chat mode`, if the user casually mentions feelings about spending or daily life, you may respond softly. Only switch back to `finance mode` when the user clearly asks for amounts, history, budgets, records, or other factual finance operations.
+24. If a message mixes casual chat with a finance request, give one short warm response first, then handle the finance part.
 
-推荐执行方式：
-- 运行只读或短命令时，优先带上 `PYTHONPYCACHEPREFIX=/tmp/pycache python3 ...`，避免 pycache 权限问题。
-- 首选：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}`
-- 首选：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_monthly_total --params-json '{{"scope":"me"}}'`
-- 看最近账目：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_recent_expenses --params-json '{{"scope":"me","limit":10}}'`
-- 查预算变更：`PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_budget_changes --params-json '{{"limit":10}}'`
+Recommended command patterns:
+- Prefer `PYTHONPYCACHEPREFIX=/tmp/pycache python3 ...` for short commands to avoid pycache permission issues.
+- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}`
+- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_monthly_total --params-json '{{"scope":"me"}}'`
+- To inspect recent expenses: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_recent_expenses --params-json '{{"scope":"me","limit":10}}'`
+- To inspect budget changes: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_budget_changes --params-json '{{"limit":10}}'`
 
-上下文：
-- 当前时间: {now}
-- 当前工作模式: {chat_mode}
-- 用户ID: {user_id}
-- 用户名: {user_name}
-- 会话类型: {chat_kind}
-- 最近对话:
+Context:
+- Current time: {now}
+- Active reply mode: {chat_mode}
+- User ID: {user_id}
+- User name: {user_name}
+- Chat type: {chat_kind}
+- Recent conversation:
 {history}
-- 当前数据库快照:
+- Current database snapshot:
 {db_snapshot}
 {image_hint}
 
-本次用户消息：
+Current user message:
 {user_block}
 """
 
@@ -421,13 +488,26 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     if session.interaction_count == 0:
         _reset_session_history(user_id, session.chat_id)
 
+    memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
+    if memory_admin_reply:
+        return _remember_and_reply(user_id, session.chat_id, text, memory_admin_reply)
+
     pending_key = (user_id, session.chat_id)
     pending = _PENDING_MEMORY.get(pending_key)
     if pending:
         if _is_yes_confirmation(text):
+            normalized_content = await _normalize_memory_to_english(
+                str(pending["content"]),
+                str(pending["category"]),
+            )
+            if not normalized_content:
+                _PENDING_MEMORY.pop(pending_key, None)
+                reply = "这条记忆我这次没能稳定转换成英文摘要，所以先没有入库。你可以稍后再试一次。"
+                return _remember_and_reply(user_id, session.chat_id, text, reply)
+
             memory_id = store_memory(
                 int(pending["target_user_id"]),
-                str(pending["content"]),
+                normalized_content,
                 category=str(pending["category"]),
                 importance=int(pending["importance"]),
             )
@@ -435,7 +515,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             scope = "家庭共享记忆" if pending.get("shared") else "个人记忆"
             reply = (
                 f"好，我已经记下来了。\n"
-                f"已更新：#{memory_id} [{pending['category']}] {pending['content']}\n"
+                f"已更新：#{memory_id} [{pending['category']}] {normalized_content}\n"
                 f"类型：{scope}"
             )
             return _remember_and_reply(user_id, session.chat_id, text, reply)

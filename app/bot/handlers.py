@@ -108,7 +108,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*记忆*\n"
         "  我会自动记住你的偏好和目标\n"
         "  `你还记得什么` — 查看记忆\n"
-        "  `忘掉XX` — 删除某条记忆\n\n"
+        "  `归档记忆 #12` — 归档某条记忆\n"
+        "  `把记忆 #12 改成 ...` — 更新某条记忆\n\n"
         "*命令*\n"
         "  /start — 开始\n"
         "  /help — 帮助\n"
@@ -181,7 +182,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id  # type: ignore[union-attr]
 
     from app.core.memory import get_recent_memories
-    memories = get_recent_memories(user_id, limit=15)
+    memories = get_recent_memories(user_id, limit=15, include_archived=True)
 
     if not memories:
         await update.message.reply_text("🧠 我还没有记住任何信息。和我多聊聊吧！")  # type: ignore[union-attr]
@@ -191,9 +192,10 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     for m in memories:
         prefix = "🔴" if m["importance"] >= 8 else "🟡" if m["importance"] >= 5 else "🟢"
         scope = "家庭" if m.get("scope") == "family" else "个人"
-        lines.append(f"  {prefix} #{m['id']} [{scope}/{m['category']}] {m['content']}")
+        status = "active" if m.get("is_active", True) else "archived"
+        lines.append(f"  {prefix} #{m['id']} [{scope}/{m['category']}/{status}] {m['content']}")
 
-    lines.append("\n💡 说「忘掉 #ID」可以删除某条记忆")
+    lines.append("\n💡 说「归档记忆 #ID」会归档某条记忆；说「把记忆 #ID 改成 ...」可以迭代更新")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")  # type: ignore[union-attr]
 
 

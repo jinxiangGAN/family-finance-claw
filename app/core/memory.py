@@ -94,6 +94,9 @@ class EpisodicMemory:
     category: str
     importance: int
     created_at: str
+    is_active: bool = True
+    archived_at: str = ""
+    supersedes_memory_id: Optional[int] = None
     similarity: float = 0.0  # set during recall
 
 
@@ -232,6 +235,7 @@ class MemoryManager:
         content: str,
         category: str = "general",
         importance: int = 5,
+        supersedes_memory_id: Optional[int] = None,
     ) -> int:
         """Store an episodic memory with optional embedding."""
         tz = ZoneInfo(TIMEZONE)
@@ -247,9 +251,10 @@ class MemoryManager:
 
         with get_connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO episodic_memories (user_id, content, category, importance, embedding, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, content, category, importance, embedding_blob, now),
+                "INSERT INTO episodic_memories "
+                "(user_id, content, category, importance, embedding, is_active, archived_at, supersedes_memory_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?)",
+                (user_id, content, category, importance, embedding_blob, supersedes_memory_id, now),
             )
             memory_id = cursor.lastrowid
             # Also index in FTS5
@@ -309,7 +314,7 @@ class MemoryManager:
         with get_connection() as conn:
             rows = conn.execute(
                 f"SELECT id, user_id, content, category, importance, embedding, created_at "
-                f"FROM episodic_memories WHERE user_id IN ({placeholders}) AND embedding IS NOT NULL "
+                f"FROM episodic_memories WHERE user_id IN ({placeholders}) AND is_active = 1 AND embedding IS NOT NULL "
                 f"ORDER BY importance DESC",
                 user_ids,
             ).fetchall()
@@ -331,6 +336,7 @@ class MemoryManager:
                 category=row["category"],
                 importance=row["importance"],
                 created_at=row["created_at"],
+                is_active=True,
                 similarity=sim,
             ))
         logger.debug("Vector recall: %d results (top sim=%.3f)", len(results), results[0].similarity if results else 0)
@@ -355,7 +361,7 @@ class MemoryManager:
                     f"SELECT m.id, m.user_id, m.content, m.category, m.importance, m.created_at, rank "
                     f"FROM episodic_fts f "
                     f"JOIN episodic_memories m ON m.id = f.rowid "
-                    f"WHERE episodic_fts MATCH ? AND m.user_id IN ({placeholders}) "
+                    f"WHERE episodic_fts MATCH ? AND m.user_id IN ({placeholders}) AND m.is_active = 1 "
                     f"ORDER BY m.importance DESC, rank "
                     f"LIMIT ?",
                     (fts_query, *user_ids, limit),
@@ -369,6 +375,7 @@ class MemoryManager:
                     category=r["category"],
                     importance=r["importance"],
                     created_at=r["created_at"],
+                    is_active=True,
                 )
                 for r in rows
             ]
@@ -395,7 +402,7 @@ class MemoryManager:
             rows = conn.execute(
                 f"SELECT m.id, m.user_id, m.content, m.category, m.importance, m.created_at "
                 f"FROM episodic_memories m "
-                f"WHERE ({like_clauses}) AND m.user_id IN ({placeholders}) "
+                f"WHERE ({like_clauses}) AND m.user_id IN ({placeholders}) AND m.is_active = 1 "
                 f"ORDER BY m.importance DESC, m.created_at DESC "
                 f"LIMIT ?",
                 (*like_params, *user_ids, limit),
@@ -409,29 +416,86 @@ class MemoryManager:
                 category=r["category"],
                 importance=r["importance"],
                 created_at=r["created_at"],
+                is_active=True,
             )
             for r in rows
         ]
 
     def delete_episode(self, memory_id: int) -> bool:
-        """Delete an episodic memory."""
+        """Soft-delete an episodic memory by archiving it."""
+        tz = ZoneInfo(TIMEZONE)
+        now = datetime.now(tz).isoformat()
         with get_connection() as conn:
             try:
                 conn.execute("DELETE FROM episodic_fts WHERE rowid = ?", (memory_id,))
             except Exception:
                 pass
-            cursor = conn.execute("DELETE FROM episodic_memories WHERE id = ?", (memory_id,))
+            cursor = conn.execute(
+                "UPDATE episodic_memories "
+                "SET is_active = 0, archived_at = ? "
+                "WHERE id = ? AND is_active = 1",
+                (now, memory_id),
+            )
             conn.commit()
         return cursor.rowcount > 0
 
-    def get_recent_episodes(self, user_id: int, limit: int = 10) -> list[EpisodicMemory]:
+    async def update_episode(
+        self,
+        memory_id: int,
+        new_content: str,
+        category: Optional[str] = None,
+        importance: Optional[int] = None,
+    ) -> Optional[int]:
+        """Archive an existing memory and create a replacement memory."""
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, user_id, category, importance, is_active FROM episodic_memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        if row is None or not row["is_active"]:
+            return None
+
+        target_category = category or row["category"]
+        target_importance = int(importance if importance is not None else row["importance"])
+        new_memory_id = await self.store_episode(
+            int(row["user_id"]),
+            new_content,
+            category=target_category,
+            importance=target_importance,
+            supersedes_memory_id=memory_id,
+        )
+
+        tz = ZoneInfo(TIMEZONE)
+        now = datetime.now(tz).isoformat()
+        with get_connection() as conn:
+            try:
+                conn.execute("DELETE FROM episodic_fts WHERE rowid = ?", (memory_id,))
+            except Exception:
+                pass
+            conn.execute(
+                "UPDATE episodic_memories "
+                "SET is_active = 0, archived_at = ? "
+                "WHERE id = ?",
+                (now, memory_id),
+            )
+            conn.commit()
+        return new_memory_id
+
+    def get_recent_episodes(
+        self,
+        user_id: int,
+        limit: int = 10,
+        include_archived: bool = False,
+    ) -> list[EpisodicMemory]:
         """Get most recent episodic memories (for /memory listing)."""
+        active_clause = "" if include_archived else "AND is_active = 1 "
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, user_id, content, category, importance, created_at "
+                "SELECT id, user_id, content, category, importance, created_at, is_active, archived_at, supersedes_memory_id "
                 "FROM episodic_memories "
                 "WHERE user_id IN (?, 0) "
-                "ORDER BY importance DESC, created_at DESC "
+                f"{active_clause}"
+                "ORDER BY is_active DESC, importance DESC, created_at DESC "
                 "LIMIT ?",
                 (user_id, limit),
             ).fetchall()
@@ -443,6 +507,9 @@ class MemoryManager:
                 category=r["category"],
                 importance=r["importance"],
                 created_at=r["created_at"],
+                is_active=bool(r["is_active"]),
+                archived_at=r["archived_at"] or "",
+                supersedes_memory_id=r["supersedes_memory_id"],
             )
             for r in rows
         ]
@@ -517,16 +584,23 @@ def set_memory_manager(manager: MemoryManager) -> None:
     _default_manager = manager
 
 
-def store_memory(user_id: int, content: str, category: str = "general", importance: int = 5) -> int:
+def store_memory(
+    user_id: int,
+    content: str,
+    category: str = "general",
+    importance: int = 5,
+    supersedes_memory_id: Optional[int] = None,
+) -> int:
     """Legacy sync wrapper — stores into episodic_memories (without embedding)."""
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).isoformat()
     importance = min(max(importance, 1), 10)
     with get_connection() as conn:
         cursor = conn.execute(
-            "INSERT INTO episodic_memories (user_id, content, category, importance, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, content, category, importance, now),
+            "INSERT INTO episodic_memories "
+            "(user_id, content, category, importance, is_active, archived_at, supersedes_memory_id, created_at) "
+            "VALUES (?, ?, ?, ?, 1, NULL, ?, ?)",
+            (user_id, content, category, importance, supersedes_memory_id, now),
         )
         memory_id = cursor.lastrowid
         try:
@@ -560,10 +634,25 @@ def delete_memory(memory_id: int) -> bool:
     return get_memory_manager().delete_episode(memory_id)
 
 
-def get_recent_memories(user_id: int, limit: int = 10) -> list[dict]:
+async def update_memory(
+    memory_id: int,
+    content: str,
+    category: Optional[str] = None,
+    importance: Optional[int] = None,
+) -> Optional[int]:
+    """Legacy async wrapper for replacing a memory with a newer version."""
+    return await get_memory_manager().update_episode(
+        memory_id,
+        content,
+        category=category,
+        importance=importance,
+    )
+
+
+def get_recent_memories(user_id: int, limit: int = 10, include_archived: bool = False) -> list[dict]:
     """Legacy wrapper — returns recent episodic memories as dicts."""
     mm = get_memory_manager()
-    episodes = mm.get_recent_episodes(user_id, limit)
+    episodes = mm.get_recent_episodes(user_id, limit, include_archived=include_archived)
     return [
         {
             "id": e.id,
@@ -572,6 +661,9 @@ def get_recent_memories(user_id: int, limit: int = 10) -> list[dict]:
             "importance": e.importance,
             "scope": "family" if e.user_id == 0 else "personal",
             "user_id": e.user_id,
+            "is_active": e.is_active,
+            "archived_at": e.archived_at,
+            "supersedes_memory_id": e.supersedes_memory_id,
         }
         for e in episodes
     ]

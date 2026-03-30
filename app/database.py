@@ -115,6 +115,9 @@ CREATE_TABLES_SQL = [
         category    TEXT    NOT NULL DEFAULT 'general',
         importance  INTEGER NOT NULL DEFAULT 5,
         embedding   BLOB,
+        is_active   INTEGER NOT NULL DEFAULT 1,
+        archived_at TIMESTAMP,
+        supersedes_memory_id INTEGER,
         created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     """,
@@ -175,6 +178,8 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_episodic_user_id    ON episodic_memories(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_episodic_category   ON episodic_memories(category);",
     "CREATE INDEX IF NOT EXISTS idx_episodic_importance  ON episodic_memories(importance);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_active      ON episodic_memories(is_active);",
+    "CREATE INDEX IF NOT EXISTS idx_episodic_supersedes  ON episodic_memories(supersedes_memory_id);",
     "CREATE INDEX IF NOT EXISTS idx_core_profiles_user  ON core_profiles(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_monthly_summaries_ym ON monthly_summaries(year, month);",
 ]
@@ -186,6 +191,9 @@ MIGRATIONS = [
     "ALTER TABLE expenses ADD COLUMN event_tag TEXT NOT NULL DEFAULT '';",
     "ALTER TABLE expenses ADD COLUMN ledger_type TEXT NOT NULL DEFAULT 'regular';",
     "ALTER TABLE events ADD COLUMN status TEXT NOT NULL DEFAULT 'active';",
+    "ALTER TABLE episodic_memories ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;",
+    "ALTER TABLE episodic_memories ADD COLUMN archived_at TIMESTAMP;",
+    "ALTER TABLE episodic_memories ADD COLUMN supersedes_memory_id INTEGER;",
 ]
 
 # Category renames: old_name → new_name (applied to expenses + budgets on startup)

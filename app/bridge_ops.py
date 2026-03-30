@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from typing import Any
 
 from app.core.memory import get_memory_manager, get_recent_memories, store_memory
 from app.database import init_db
 from app.services.expense_service import get_recent_expenses
 from app.services.skills import execute_skill
+
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
 def _snapshot(user_id: int) -> dict[str, Any]:
@@ -71,6 +74,12 @@ def main() -> None:
         return
 
     if args.command == "store-memory":
+        if _CJK_RE.search(args.content):
+            print(json.dumps({
+                "success": False,
+                "message": "Memory content must be stored in English. Rewrite it into concise English first.",
+            }, ensure_ascii=False))
+            return
         target_user_id = 0 if args.shared else args.user_id
         memory_id = store_memory(
             target_user_id,
