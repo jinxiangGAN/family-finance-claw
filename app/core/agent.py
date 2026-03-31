@@ -649,7 +649,8 @@ Only run:
 `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.core.finance_workbench --user-id {user_id} --user-name "{user_name}" --action {fast_intent} --text '<original user text>'`
 
 The workbench already parses the user text and runs the correct database action.
-The workbench returns a JSON object with a `reply` field. Prefer returning that `reply` directly unless a one-line clarification is required.
+The workbench returns a JSON object with a `reply` field. Use that `reply` as the factual baseline.
+You may lightly polish the wording so it feels natural, warm, and chat-friendly, but do not change any facts, numbers, ids, categories, scope, or deletion result.
 Do not inspect repo files. Do not use bridge_ops. Do not use other skills. Keep the reply short.
 If the message is genuinely too ambiguous for the workbench, ask one short clarification question.
 
