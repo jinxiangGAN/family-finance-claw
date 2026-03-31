@@ -508,6 +508,14 @@ def _build_action_confirmation(action_label: str, original_text: str) -> str:
         action_label,
         ("relevant skill", "apply the requested write operation"),
     )
+    return (
+        f"小灰毛理解到这次是想：{action_label}。\n"
+        f"预计会调用：`{function_name}`\n"
+        f"这个函数会负责：{function_purpose}\n"
+        f"原始内容：{original_text}\n"
+        "要继续的话，回“小灰毛，继续”或者直接回“是”；"
+        "如果先不做，回“不要”就行。"
+    )
 
 
 def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> Optional[str]:
@@ -527,13 +535,6 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
     if _BUDGET_SET_RE.match(stripped):
         return "budget_set"
     return None
-    return (
-        f"我理解你是要执行这个操作：{action_label}。\n"
-        f"预计调用：`{function_name}`\n"
-        f"作用：{function_purpose}\n"
-        f"原始内容：{original_text}\n"
-        "要我继续执行吗？回复“是”继续，回复“不要”取消。"
-    )
 
 
 def _build_prompt(
@@ -599,6 +600,8 @@ Rules:
    - never stiff or corporate
 14. In chat mode, prefer natural human reactions over assistant-like phrasing. Acknowledge mood first, then respond.
 15. It is okay for `小灰毛` to sound cute, bright, or lightly cheeky, but avoid sounding exaggerated, flirty, roleplay-heavy, or overly verbose.
+16. When it feels natural in family conversation, prefer using `小鸡毛` or `小白` instead of generic `你`.
+17. Even in factual replies, keep the tone soft and companion-like rather than tool-like.
 
 Environment:
 - Database path: {DATABASE_PATH}
@@ -651,6 +654,7 @@ Only run:
 The workbench already parses the user text and runs the correct database action.
 The workbench returns a JSON object with a `reply` field. Use that `reply` as the factual baseline.
 You may lightly polish the wording so it feels natural, warm, and chat-friendly, but do not change any facts, numbers, ids, categories, scope, or deletion result.
+When it feels natural, prefer `小鸡毛` / `小白` over generic `你`.
 Do not inspect repo files. Do not use bridge_ops. Do not use other skills. Keep the reply short.
 If the message is genuinely too ambiguous for the workbench, ask one short clarification question.
 
@@ -678,7 +682,7 @@ async def _run_codex(
     cleaned = (reply or "").strip()
     if cleaned:
         return cleaned
-    return "我这次没有稳定拿到结果，你再发一次我继续帮你看。"
+    return "小灰毛这次没稳稳接住，麻烦再发一次，我继续接着看。"
 
 
 async def agent_handle(text: str, user_id: int, user_name: str, session: Session, assistant_id: str) -> str:
@@ -697,7 +701,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         if _is_no_confirmation(text):
             _PENDING_ACTION.pop(pending_action_key, None)
-            reply = "好，这次操作我先不执行。"
+            reply = "好呀，那这次小灰毛先不动它。"
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         _PENDING_ACTION.pop(pending_action_key, None)
 
@@ -719,7 +723,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             )
             if not normalized_content:
                 _PENDING_MEMORY.pop(pending_key, None)
-                reply = "这条记忆我这次没能稳定转换成英文摘要，所以先没有入库。你可以稍后再试一次。"
+                reply = "这条记忆小灰毛这次没稳稳转成英文摘要，所以先没写进去。稍后再试一次会更稳。"
                 return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
             memory_id = store_memory(
@@ -731,30 +735,30 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             _PENDING_MEMORY.pop(pending_key, None)
             scope = "家庭共享记忆" if pending.get("shared") else "个人记忆"
             reply = (
-                f"好，我已经记下来了。\n"
+                f"好呀，小灰毛已经记下来了。\n"
                 f"已更新：#{memory_id} [{pending['category']}] {normalized_content}\n"
                 f"类型：{scope}"
             )
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         if _is_no_confirmation(text):
             _PENDING_MEMORY.pop(pending_key, None)
-            reply = "好，这条我先不记。之后如果你想记下来，直接再告诉我一遍就行。"
+            reply = "好呀，这条小灰毛先不记。之后如果还想记下来，再提一嘴就行。"
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         _PENDING_MEMORY.pop(pending_key, None)
 
     memory_candidate = _detect_memory_candidate(user_id, text)
     if memory_candidate:
         if memory_candidate.get("duplicate"):
-            reply = f"这条信息我已经记着了：{memory_candidate['content']}"
+            reply = f"这条小灰毛已经记着啦：{memory_candidate['content']}"
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
         _PENDING_MEMORY[pending_key] = memory_candidate
         scope = "家庭共享记忆" if memory_candidate.get("shared") else "个人记忆"
         reply = (
-            f"我发现这句话可能值得记忆：\n"
+            f"小灰毛觉得这句话挺值得记一下：\n"
             f"[{memory_candidate['category']}] {memory_candidate['content']}\n"
             f"准备写入：{scope}\n"
-            "要我记下来吗？回复“是”或“不要”即可。"
+            "要不要让小灰毛记下来？回“是”或者“不要”就行。"
         )
         return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 

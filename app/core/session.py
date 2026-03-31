@@ -75,6 +75,7 @@ class Session:
 
 # Keyed by (user_id, chat_id) to support separate sessions per chat
 _sessions: dict[tuple[int, int], Session] = {}
+_private_chat_routes: dict[int, int] = {}
 
 
 def get_or_create_session(
@@ -99,12 +100,16 @@ def get_or_create_session(
             chat_type=chat_type,
         )
         _sessions[key] = session
+        if chat_type == "private":
+            _private_chat_routes[user_id] = chat_id
         logger.debug("New session for user %d in chat %d (type=%s)", user_id, chat_id, chat_type)
         return session
 
     # Update existing session
     session.chat_type = chat_type
     session.touch()
+    if chat_type == "private":
+        _private_chat_routes[user_id] = chat_id
     return session
 
 
@@ -116,6 +121,11 @@ def get_active_session_count() -> int:
 def reset_session(user_id: int, chat_id: int) -> None:
     """Remove the current session so the next turn starts fresh."""
     _sessions.pop((user_id, chat_id), None)
+
+
+def get_private_chat_route(user_id: int) -> Optional[int]:
+    """Return the most recently seen private chat id for a user."""
+    return _private_chat_routes.get(user_id)
 
 
 # ═══════════════════════════════════════════

@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, time
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,7 +33,7 @@ from app.config import (
 from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.services.expense_service import delete_last_expense
-from app.core.session import get_or_create_session, reset_session
+from app.core.session import get_or_create_session, get_private_chat_route, reset_session
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def _is_allowed(user_id: int) -> bool:
 async def _check_access(update: Update) -> bool:
     if _is_allowed(update.effective_user.id):  # type: ignore[union-attr]
         return True
-    await update.message.reply_text("⛔ 你没有使用权限。")  # type: ignore[union-attr]
+    await update.message.reply_text("⛔ 小灰毛这边还没给这个账号开权限。")  # type: ignore[union-attr]
     return False
 
 
@@ -256,7 +257,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reset_agent_context(user.id, chat.id, assistant_id=session.assistant_id, is_group=session.is_group)
     reset_session(user.id, chat.id)
     await update.message.reply_text(  # type: ignore[union-attr]
-        "已清空当前聊天上下文。短期对话状态已重置，但账目、记忆和画像都保留。"
+        "好啦，这段聊天上下文已经清空了。账目、记忆和画像都还在，小灰毛只是把这段临时状态放下了。"
     )
 
 
@@ -270,7 +271,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     memories = get_recent_memories(user_id, limit=15, include_archived=True)
 
     if not memories:
-        await update.message.reply_text("🧠 我还没有记住任何信息。和我多聊聊吧！")  # type: ignore[union-attr]
+        await update.message.reply_text("🧠 小灰毛这边暂时还没有记住什么，之后多聊几句就会慢慢有啦。")  # type: ignore[union-attr]
         return
 
     lines = ["🧠 *我记住的信息*\n"]
@@ -290,7 +291,7 @@ def _safe_reply_text(reply: str) -> str:
     cleaned = (reply or "").strip()
     if cleaned:
         return cleaned
-    return "我这次没有稳定拿到结果，你再发一次我继续帮你看。"
+    return "小灰毛这次没稳稳接住，麻烦再发一次，我继续帮着看。"
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route text messages through the session-aware LLM agent."""
@@ -310,14 +311,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         target_id, body = forward_request
         target_name = FAMILY_MEMBERS.get(target_id, str(target_id))
         sender_name = session.display_name
+        target_chat_id = get_private_chat_route(target_id)
+        if target_chat_id is None:
+            await update.message.reply_text(  # type: ignore[union-attr]
+                f"小灰毛这边还没连上 {target_name} 的私聊入口。\n"
+                f"先让 {target_name} 私聊小灰毛发一句话，再来让小灰毛代发就行。"
+            )
+            return
         forwarded_text = (
-            f"📨 小灰毛代转来自 {sender_name} 的消息：\n\n"
+            f"📨 小灰毛帮忙转一句 {sender_name} 的话：\n\n"
             f"{body}"
         )
-        await context.bot.send_message(chat_id=target_id, text=forwarded_text)
+        try:
+            delivered = await context.bot.send_message(chat_id=target_chat_id, text=forwarded_text)
+        except TelegramError as exc:
+            logger.warning("Failed to forward message to %s(user_id=%s, chat_id=%s): %s", target_name, target_id, target_chat_id, exc)
+            await update.message.reply_text(  # type: ignore[union-attr]
+                f"这次小灰毛没能把话带给 {target_name}。\n"
+                "多半是对方还没先私聊过小灰毛，或者现在把小灰毛静音/屏蔽了。\n"
+                "先让对方给小灰毛发一次 /start，再试一次会更稳。"
+            )
+            return
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"好，我已经转发给 {target_name} 了。"
+            f"好，小灰毛已经把话带给 {target_name} 了。"
         )
+        logger.info("Forwarded family message from %s to %s via chat_id=%s message_id=%s", sender_name, target_name, target_chat_id, delivered.message_id)
         return
     if text.strip().lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
@@ -329,7 +347,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     route = DEFAULT_ASSISTANT_ROUTER.resolve(text, session)
     if route.unknown_identifier:
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"我现在还没有接入名为「{route.unknown_identifier}」的助手。当前可用的是：小灰毛。"
+            f"小灰毛这边暂时还没有接入名为「{route.unknown_identifier}」的助手。现在能用的是：小灰毛。"
         )
         return
 
@@ -349,7 +367,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     route = DEFAULT_ASSISTANT_ROUTER.resolve(update.message.caption or "", session)  # type: ignore[union-attr]
     if route.unknown_identifier:
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"我现在还没有接入名为「{route.unknown_identifier}」的助手。当前可用的是：小灰毛。"
+            f"小灰毛这边暂时还没有接入名为「{route.unknown_identifier}」的助手。现在能用的是：小灰毛。"
         )
         return
 
