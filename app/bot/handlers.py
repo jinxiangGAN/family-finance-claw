@@ -8,6 +8,7 @@ import time as _time
 from datetime import datetime, time
 
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,7 +33,6 @@ from app.config import (
 from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.core.observability import log_event
-from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session, reset_session
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ def _build_help_text(session, categories_text: str) -> str:
         "  `/help` — 查看这份功能地图\n"
         "  `/memory` — 查看记忆\n"
         "  `/reset` — 清空当前聊天上下文\n"
-        "  `/delete` — 删除最近一条账目\n"
+        "  `/delete` — 进入删除最近一条账目的流程\n"
         "  `/export` — 导出 CSV\n"
         "  `/usage` — 查看当前运行模式\n\n"
         f"*分类*：{categories_text}\n"
@@ -144,7 +144,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🧠 *记忆*：我会记住你的偏好和目标\n"
         "📷 *收据*：发送照片自动识别\n"
         "📤 *导出*：/export\n\n"
-        "📌 *命令*：/help /delete /export /usage /memory /reset\n\n"
+        "📌 *命令*：/help /delete /export /usage /memory /reset\n"
+        "   其中 `/delete` 会走统一删除流程，不会直接绕过小灰毛删库\n\n"
         f"💰 {CURRENCY} | 🤖 {BOT_BACKEND}",
         parse_mode="Markdown",
     )
@@ -162,14 +163,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_access(update):
         return
-    user_id = update.effective_user.id  # type: ignore[union-attr]
-    deleted = delete_last_expense(user_id)
-    if deleted:
-        await update.message.reply_text(  # type: ignore[union-attr]
-            f"🗑 已删除：{deleted.category} {deleted.amount:.2f} {deleted.currency}（{deleted.note}）"
-        )
-    else:
-        await update.message.reply_text("没有可以删除的记录。")  # type: ignore[union-attr]
+    user = update.effective_user  # type: ignore[union-attr]
+    session = _get_session(update)
+    user_name = session.display_name
+    reply = await agent_handle("删除最近一笔", user.id, user_name, session, session.assistant_id)
+    await update.message.reply_text(_safe_reply_text(reply))  # type: ignore[union-attr]
 
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -251,6 +249,32 @@ def _safe_reply_text(reply: str) -> str:
     if cleaned:
         return cleaned
     return "小灰毛这次没稳稳接住，麻烦再发一次，我继续帮着看。"
+
+
+async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Global Telegram error handler so failures stay visible and user-friendly."""
+    err = context.error
+    logger.exception("Unhandled Telegram update failure", exc_info=err)
+    log_event(
+        logger,
+        "telegram.unhandled_error",
+        error_type=type(err).__name__ if err else "UnknownError",
+        error_message=str(err)[:300] if err else "",
+    )
+
+    if not isinstance(update, Update):
+        return
+    chat = update.effective_chat
+    if not chat:
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text="小灰毛刚刚卡了一下，这次没有顺利接住。你再发一次，我接着处理。",
+        )
+    except TelegramError:
+        logger.exception("Failed to send fallback error message to chat %s", chat.id)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route text messages through the session-aware LLM agent."""
@@ -380,6 +404,7 @@ def build_application() -> Application:
 
     # Photo messages → Receipt OCR
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_error_handler(handle_error)
 
     # ── Scheduled Jobs ──
     tz = ZoneInfo(TIMEZONE)
