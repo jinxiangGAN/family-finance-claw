@@ -3,12 +3,10 @@
 import io
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, time
 
 from telegram import Update
-from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -33,13 +31,9 @@ from app.config import (
 from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.services.expense_service import delete_last_expense
-from app.core.session import get_or_create_session, get_private_chat_route, reset_session
+from app.core.session import get_or_create_session, reset_session
 
 logger = logging.getLogger(__name__)
-
-_FORWARD_MESSAGE_RE = re.compile(
-    r"^\s*(?:给|发消息给|帮我发给|转告|转发给)\s*(?P<target>[^\s:：]+)\s*(?:发消息|带句话|说|：|:)?\s*(?P<body>.+?)\s*$"
-)
 
 _HELP_LIKE_TEXTS = {
     "help",
@@ -131,43 +125,6 @@ def _build_help_text(session, categories_text: str) -> str:
         help_text += "\n\n💡 你也可以直接问我：`你会什么`、`怎么改记忆`、`怎么开始旅行计划`。"
 
     return help_text
-
-
-def _resolve_family_member_id(identifier: str, *, exclude_user_id: int | None = None) -> int | None:
-    normalized = identifier.strip().lower()
-    alias_map: dict[str, int] = {}
-    for uid, name in FAMILY_MEMBERS.items():
-        alias_map[name.lower()] = uid
-    # Friendly aliases for the current 2-person household.
-    for uid, name in FAMILY_MEMBERS.items():
-        if "小白" in name:
-            alias_map.setdefault("老婆", uid)
-            alias_map.setdefault("妻子", uid)
-        if "小鸡毛" in name:
-            alias_map.setdefault("老公", uid)
-            alias_map.setdefault("丈夫", uid)
-
-    target_id = alias_map.get(normalized)
-    if target_id is None:
-        return None
-    if exclude_user_id is not None and target_id == exclude_user_id:
-        return None
-    return target_id
-
-
-def _parse_forward_message(text: str, *, sender_user_id: int) -> tuple[int, str] | None:
-    match = _FORWARD_MESSAGE_RE.match(text.strip())
-    if not match:
-        return None
-    target_id = _resolve_family_member_id(match.group("target"), exclude_user_id=sender_user_id)
-    if target_id is None:
-        return None
-    body = match.group("body").strip()
-    if not body:
-        return None
-    return target_id, body
-
-
 # ───────────────── Commands ─────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -306,37 +263,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id: int = user.id
     session = _get_session(update)
     user_name: str = session.display_name
-    forward_request = _parse_forward_message(text, sender_user_id=user_id)
-    if forward_request:
-        target_id, body = forward_request
-        target_name = FAMILY_MEMBERS.get(target_id, str(target_id))
-        sender_name = session.display_name
-        target_chat_id = get_private_chat_route(target_id)
-        if target_chat_id is None:
-            await update.message.reply_text(  # type: ignore[union-attr]
-                f"小灰毛这边还没连上 {target_name} 的私聊入口。\n"
-                f"先让 {target_name} 私聊小灰毛发一句话，再来让小灰毛代发就行。"
-            )
-            return
-        forwarded_text = (
-            f"📨 小灰毛帮忙转一句 {sender_name} 的话：\n\n"
-            f"{body}"
-        )
-        try:
-            delivered = await context.bot.send_message(chat_id=target_chat_id, text=forwarded_text)
-        except TelegramError as exc:
-            logger.warning("Failed to forward message to %s(user_id=%s, chat_id=%s): %s", target_name, target_id, target_chat_id, exc)
-            await update.message.reply_text(  # type: ignore[union-attr]
-                f"这次小灰毛没能把话带给 {target_name}。\n"
-                "多半是对方还没先私聊过小灰毛，或者现在把小灰毛静音/屏蔽了。\n"
-                "先让对方给小灰毛发一次 /start，再试一次会更稳。"
-            )
-            return
-        await update.message.reply_text(  # type: ignore[union-attr]
-            f"好，小灰毛已经把话带给 {target_name} 了。"
-        )
-        logger.info("Forwarded family message from %s to %s via chat_id=%s message_id=%s", sender_name, target_name, target_chat_id, delivered.message_id)
-        return
     if text.strip().lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
         await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
