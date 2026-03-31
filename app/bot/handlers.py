@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import tempfile
+import time as _time
 from datetime import datetime, time
 
 from telegram import Update
@@ -30,6 +31,7 @@ from app.config import (
 )
 from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
+from app.core.observability import log_event
 from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session, reset_session
 
@@ -263,6 +265,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id: int = user.id
     session = _get_session(update)
     user_name: str = session.display_name
+    started_at = _time.perf_counter()
     if text.strip().lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
         await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
@@ -271,6 +274,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action("typing")  # type: ignore[union-attr]
 
     route = DEFAULT_ASSISTANT_ROUTER.resolve(text, session)
+    log_event(
+        logger,
+        "telegram.text_received",
+        user_id=user_id,
+        chat_id=session.chat_id,
+        assistant_id=route.assistant_id,
+        is_group=session.is_group,
+        help_like=text.strip().lower() in _HELP_LIKE_TEXTS,
+        text_preview=text[:80],
+    )
     if route.unknown_identifier:
         await update.message.reply_text(  # type: ignore[union-attr]
             f"小灰毛这边暂时还没有接入名为「{route.unknown_identifier}」的助手。现在能用的是：小灰毛。"
@@ -279,6 +292,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     reply = await agent_handle(route.message_text, user_id, user_name, session, route.assistant_id)
     await update.message.reply_text(_safe_reply_text(reply))  # type: ignore[union-attr]
+    log_event(
+        logger,
+        "telegram.text_replied",
+        user_id=user_id,
+        chat_id=session.chat_id,
+        assistant_id=route.assistant_id,
+        elapsed_ms=round((_time.perf_counter() - started_at) * 1000, 1),
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,6 +311,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id: int = user.id
     session = _get_session(update)
     user_name: str = session.display_name
+    started_at = _time.perf_counter()
     route = DEFAULT_ASSISTANT_ROUTER.resolve(update.message.caption or "", session)  # type: ignore[union-attr]
     if route.unknown_identifier:
         await update.message.reply_text(  # type: ignore[union-attr]
@@ -310,11 +332,27 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     tmp.close()
 
     await update.message.chat.send_action("typing")  # type: ignore[union-attr]
+    log_event(
+        logger,
+        "telegram.photo_received",
+        user_id=user_id,
+        chat_id=session.chat_id,
+        assistant_id=route.assistant_id,
+        caption_preview=(caption or "")[:80],
+    )
 
     try:
         await file.download_to_drive(custom_path=tmp_path)
         reply = await agent_handle_image(tmp_path, caption, user_id, user_name, session, route.assistant_id)
         await update.message.reply_text(_safe_reply_text(reply))  # type: ignore[union-attr]
+        log_event(
+            logger,
+            "telegram.photo_replied",
+            user_id=user_id,
+            chat_id=session.chat_id,
+            assistant_id=route.assistant_id,
+            elapsed_ms=round((_time.perf_counter() - started_at) * 1000, 1),
+        )
     finally:
         try:
             os.unlink(tmp_path)

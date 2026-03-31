@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 from typing import Any
 
 import httpx
 
 from app.config import FAMILY_MEMBERS, TELEGRAM_BOT_TOKEN
+from app.core.observability import log_event, timed_event
 from app.core.session import get_private_chat_route
+
+logger = logging.getLogger(__name__)
 
 _FORWARD_MESSAGE_PATTERNS = [
     re.compile(
@@ -86,9 +90,16 @@ def _deliver_forward_message(
     forwarded_text = f"📨 小灰毛帮忙转一句 {sender_name} 的话：\n\n{body}"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        response = httpx.post(url, json={"chat_id": target_chat_id, "text": forwarded_text}, timeout=15.0)
-        response.raise_for_status()
-        payload = response.json()
+        with timed_event(
+            logger,
+            "family_workbench.telegram_send",
+            target_id=target_id,
+            target_name=target_name,
+            target_chat_id=target_chat_id,
+        ):
+            response = httpx.post(url, json={"chat_id": target_chat_id, "text": forwarded_text}, timeout=15.0)
+            response.raise_for_status()
+            payload = response.json()
     except Exception as exc:
         return {
             "success": False,
@@ -116,19 +127,47 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
     if action != "forward_message":
         raise ValueError(f"Unsupported family workbench action: {action}")
     params = _parse_forward_message(text, sender_user_id=user_id)
-    raw_result = _deliver_forward_message(
-        sender_name=user_name,
+    log_event(
+        logger,
+        "family_workbench.action_start",
+        action=action,
+        user_id=user_id,
         target_id=int(params["target_id"]),
         target_name=str(params["target_name"]),
-        body=str(params["body"]),
     )
-    return {
+    with timed_event(
+        logger,
+        "family_workbench.action_complete",
+        action=action,
+        user_id=user_id,
+        target_id=int(params["target_id"]),
+        target_name=str(params["target_name"]),
+    ):
+        raw_result = _deliver_forward_message(
+            sender_name=user_name,
+            target_id=int(params["target_id"]),
+            target_name=str(params["target_name"]),
+            body=str(params["body"]),
+        )
+    result = {
         "success": bool(raw_result.get("success", False)),
         "action": action,
         "params": params,
         "reply": _render_forward_reply(raw_result).strip(),
         "payload": raw_result,
     }
+    log_event(
+        logger,
+        "family_workbench.action_result",
+        action=action,
+        user_id=user_id,
+        target_id=int(params["target_id"]),
+        target_name=str(params["target_name"]),
+        success=bool(raw_result.get("success", False)),
+        target_chat_id=raw_result.get("target_chat_id"),
+        message_id=raw_result.get("message_id"),
+    )
+    return result
 
 
 def main() -> None:

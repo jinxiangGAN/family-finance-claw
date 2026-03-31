@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 from typing import Any
 
 from app.config import CATEGORIES, CURRENCY
 from app.database import init_db
+from app.core.observability import log_event, timed_event
 from app.services.skills import execute_skill
+
+logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)")
 _RECORD_RE = re.compile(
@@ -197,11 +201,25 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
         raise ValueError(f"Unsupported workbench action: {action}")
     skill_name, parser = _WORKBENCH_ACTIONS[action]
     params = parser(text)
-    raw_result = execute_skill(skill_name, user_id, user_name, params)
+    log_event(
+        logger,
+        "finance_workbench.action_start",
+        action=action,
+        skill_name=skill_name,
+        user_id=user_id,
+    )
+    with timed_event(
+        logger,
+        "finance_workbench.action_complete",
+        action=action,
+        skill_name=skill_name,
+        user_id=user_id,
+    ):
+        raw_result = execute_skill(skill_name, user_id, user_name, params)
     renderer = _WORKBENCH_RENDERERS[action]
     success = bool(raw_result.get("success", False))
     reply = renderer(raw_result) if success else str(raw_result.get("message") or "这次操作失败了。")
-    return {
+    result = {
         "success": success,
         "action": action,
         "skill_name": skill_name,
@@ -209,6 +227,15 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
         "reply": reply.strip(),
         "payload": raw_result,
     }
+    log_event(
+        logger,
+        "finance_workbench.action_result",
+        action=action,
+        skill_name=skill_name,
+        user_id=user_id,
+        success=success,
+    )
+    return result
 
 
 def main() -> None:

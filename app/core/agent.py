@@ -22,6 +22,7 @@ from app.config import (
     TIMEZONE,
 )
 from app.core.resident_agent import DEFAULT_RESIDENT_AGENT_SERVICE
+from app.core.observability import log_event
 from app.core.session import Session
 from app.mcp_tools.registry import execute_tool
 from app.services.expense_service import get_expenses, get_recent_expenses
@@ -785,6 +786,14 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
 
     fast_intent = _detect_fast_finance_intent(text)
     if fast_intent in _FAST_WORKBENCH_INTENTS:
+        log_event(
+            logger,
+            "agent.fast_path",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+            intent=fast_intent,
+        )
         prompt = _build_fast_prompt(
             text=text,
             user_id=user_id,
@@ -793,6 +802,13 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             fast_intent=fast_intent,
         )
     else:
+        log_event(
+            logger,
+            "agent.full_path",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
         prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
     reply = await _run_codex(prompt, user_id=thread_owner_id, chat_id=session.chat_id, assistant_id=assistant_id)
     return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)

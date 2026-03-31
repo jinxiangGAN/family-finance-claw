@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from app.config import CODEX_RUNTIME_MODE, CODEX_SERVICE_TIER, CODEX_TIMEOUT_SECONDS
 from app.core.assistant_registry import AssistantConfig
+from app.core.observability import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,16 @@ class CodexExecRuntime:
         )
 
         try:
+            log_event(
+                logger,
+                "codex_exec.start",
+                assistant_id=config.assistant_id,
+                transport=state.transport,
+                chat_id=state.key.chat_id,
+                user_id=state.key.user_id,
+                thread_id=prior_thread_id or "new",
+                image=bool(image_path),
+            )
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 cwd=config.workspace_path,
@@ -110,6 +121,15 @@ class CodexExecRuntime:
                 await proc.communicate()
                 logger.error("[CODEX] Timed out after %ss", CODEX_TIMEOUT_SECONDS)
                 state.last_error = "timeout"
+                log_event(
+                    logger,
+                    "codex_exec.timeout",
+                    assistant_id=config.assistant_id,
+                    transport=state.transport,
+                    chat_id=state.key.chat_id,
+                    user_id=state.key.user_id,
+                    timeout_seconds=CODEX_TIMEOUT_SECONDS,
+                )
                 return "这次处理超时了，请稍后再试一次。"
 
             if proc.returncode != 0:
@@ -127,6 +147,15 @@ class CodexExecRuntime:
                     state.last_error = f"resume-exit:{proc.returncode}"
                     return await self._run_with_recovery(config, state, prompt, image_path=image_path)
                 state.last_error = f"exit:{proc.returncode}"
+                log_event(
+                    logger,
+                    "codex_exec.error",
+                    assistant_id=config.assistant_id,
+                    transport=state.transport,
+                    chat_id=state.key.chat_id,
+                    user_id=state.key.user_id,
+                    exit_code=proc.returncode,
+                )
                 return "本地 Codex 处理失败了，请稍后再试。"
 
             try:
@@ -143,6 +172,15 @@ class CodexExecRuntime:
                 if thread_id:
                     state.persistent_session_id = thread_id
                     state.transport = "resume"
+            log_event(
+                logger,
+                "codex_exec.success",
+                assistant_id=config.assistant_id,
+                transport=state.transport,
+                chat_id=state.key.chat_id,
+                user_id=state.key.user_id,
+                thread_id=state.persistent_session_id or prior_thread_id or "new",
+            )
             return message or "操作完成。"
         finally:
             state.touch()

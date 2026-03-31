@@ -7,12 +7,16 @@ service abstraction instead of calling the Codex CLI directly.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from app.config import DEFAULT_ASSISTANT_ID
 from app.core.assistant_registry import AssistantRegistry, DEFAULT_ASSISTANT_REGISTRY
 from app.core.codex_session import CodexSessionManager
+from app.core.observability import log_event, timed_event
 from app.core.runtime_provider import ProviderRuntimeRouter
+
+logger = logging.getLogger(__name__)
 
 
 class ResidentAgentService:
@@ -44,12 +48,30 @@ class ResidentAgentService:
             user_id=user_id,
             chat_id=chat_id,
         )
-        reply = await self.runtime.run(
-            assistant,
-            state,
-            prompt,
-            image_path=image_path,
+        log_event(
+            logger,
+            "resident_agent.turn_start",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            transport=state.transport,
+            thread_id=state.persistent_session_id or "new",
+            image=bool(image_path),
         )
+        with timed_event(
+            logger,
+            "resident_agent.turn_complete",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            image=bool(image_path),
+        ):
+            reply = await self.runtime.run(
+                assistant,
+                state,
+                prompt,
+                image_path=image_path,
+            )
         self.session_manager.save()
         return reply
 
