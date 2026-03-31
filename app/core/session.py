@@ -13,14 +13,16 @@ Each session carries:
 """
 
 import logging
+import json
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from zoneinfo import ZoneInfo
 
-from app.config import DEFAULT_ASSISTANT_ID, FAMILY_MEMBERS, TIMEZONE
+from app.config import DEFAULT_ASSISTANT_ID, FAMILY_MEMBERS, PRIVATE_CHAT_ROUTE_STORE_PATH, TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,36 @@ _sessions: dict[tuple[int, int], Session] = {}
 _private_chat_routes: dict[int, int] = {}
 
 
+def _load_private_chat_routes() -> dict[int, int]:
+    path = Path(PRIVATE_CHAT_ROUTE_STORE_PATH)
+    try:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        routes: dict[int, int] = {}
+        for user_id, chat_id in data.items():
+            routes[int(user_id)] = int(chat_id)
+        return routes
+    except Exception:
+        logger.exception("Failed to load private chat routes from %s", path)
+        return {}
+
+
+def _save_private_chat_routes() -> None:
+    path = Path(PRIVATE_CHAT_ROUTE_STORE_PATH)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {str(user_id): chat_id for user_id, chat_id in _private_chat_routes.items()}
+        path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        logger.exception("Failed to save private chat routes to %s", path)
+
+
+_private_chat_routes.update(_load_private_chat_routes())
+
+
 def get_or_create_session(
     user_id: int,
     user_name: str,
@@ -102,6 +134,7 @@ def get_or_create_session(
         _sessions[key] = session
         if chat_type == "private":
             _private_chat_routes[user_id] = chat_id
+            _save_private_chat_routes()
         logger.debug("New session for user %d in chat %d (type=%s)", user_id, chat_id, chat_type)
         return session
 
@@ -110,6 +143,7 @@ def get_or_create_session(
     session.touch()
     if chat_type == "private":
         _private_chat_routes[user_id] = chat_id
+        _save_private_chat_routes()
     return session
 
 

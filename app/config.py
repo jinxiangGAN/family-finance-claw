@@ -38,6 +38,7 @@ LLM_MONTHLY_TOKEN_LIMIT: int = int(os.getenv("LLM_MONTHLY_TOKEN_LIMIT", "0"))
 # Database
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/expenses.db")
 CODEX_SESSION_STORE_PATH: str = os.getenv("CODEX_SESSION_STORE_PATH", "data/codex_sessions.json")
+PRIVATE_CHAT_ROUTE_STORE_PATH: str = os.getenv("PRIVATE_CHAT_ROUTE_STORE_PATH", "data/private_chat_routes.json")
 
 # Allowed Telegram user IDs (comma-separated)
 _allowed = os.getenv("ALLOWED_USER_IDS", "")
