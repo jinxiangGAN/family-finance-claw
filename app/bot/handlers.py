@@ -1,5 +1,6 @@
 """Telegram bot handlers (Agent v3: memory + session + proactive)."""
 
+import asyncio
 import io
 import logging
 import os
@@ -35,6 +36,7 @@ from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_s
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.core.observability import log_event
 from app.core.session import get_or_create_session
+from app.core.telegram_sender import clear_telegram_sender, register_telegram_sender
 
 logger = logging.getLogger(__name__)
 
@@ -398,11 +400,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             pass
 
 
+async def _on_post_init(app: Application) -> None:
+    register_telegram_sender(app.bot, asyncio.get_running_loop())
+
+
+async def _on_post_shutdown(app: Application) -> None:
+    clear_telegram_sender()
+
+
 # ───────────────── Bot builder ─────────────────
 
 def build_application() -> Application:
     """Create and configure the Telegram bot Application with all scheduled jobs."""
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(_on_post_init)
+        .post_shutdown(_on_post_shutdown)
+        .build()
+    )
 
     # Commands
     app.add_handler(CommandHandler("start", cmd_start))
