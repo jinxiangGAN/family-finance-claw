@@ -1,12 +1,28 @@
 """Service layer for expense CRUD operations."""
 
 import logging
+import sqlite3
+from datetime import datetime, timedelta
 from typing import Optional
 
+from zoneinfo import ZoneInfo
+
+from app.config import CURRENCY, TIMEZONE
 from app.database import get_connection
 from app.models.expense import Expense
+from app.services.stats_service import get_spouse_id, resolve_user_ids
 
 logger = logging.getLogger(__name__)
+
+
+def _reset_expense_sequence_if_empty(conn: sqlite3.Connection) -> None:
+    row = conn.execute("SELECT COUNT(*) AS count FROM expenses").fetchone()
+    if row is None or int(row["count"]) != 0:
+        return
+    try:
+        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'expenses'")
+    except sqlite3.OperationalError:
+        logger.debug("sqlite_sequence is unavailable; skipping expense id reset")
 
 
 def save_expense(expense: Expense) -> int:
@@ -48,6 +64,7 @@ def delete_last_expense(user_id: int) -> Optional[Expense]:
             return None
         expense = _row_to_expense(row)
         conn.execute("DELETE FROM expenses WHERE id = ?", (row["id"],))
+        _reset_expense_sequence_if_empty(conn)
         conn.commit()
     logger.info("Deleted expense id=%s for user=%s", expense.id, user_id)
     return expense
@@ -94,6 +111,7 @@ def delete_expense_by_id(
             return None
         expense = _row_to_expense(row)
         conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+        _reset_expense_sequence_if_empty(conn)
         conn.commit()
     logger.info("Deleted expense id=%s", expense_id)
     return expense
@@ -107,6 +125,49 @@ def get_recent_expenses(user_id: int, limit: int = 10) -> list[Expense]:
             (user_id, limit),
         ).fetchall()
     return [_row_to_expense(r) for r in rows]
+
+
+def get_today_total(
+    *,
+    user_id: int,
+    scope: str = "me",
+    include_special: bool = False,
+) -> dict[str, object]:
+    """Get today's total in default currency for me/spouse/family."""
+    if scope == "spouse" and get_spouse_id(user_id) is None:
+        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
+
+    user_ids = resolve_user_ids(scope, user_id)
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+
+    conditions = ["datetime(created_at) >= datetime(?)", "datetime(created_at) < datetime(?)"]
+    params: list[object] = [start.isoformat(), end.isoformat()]
+
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        conditions.append(f"user_id IN ({placeholders})")
+        params.extend(user_ids)
+    if not include_special:
+        conditions.append("ledger_type = 'regular'")
+
+    sql = (
+        "SELECT COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0) AS total "
+        f"FROM expenses WHERE {' AND '.join(conditions)}"
+    )
+    with get_connection() as conn:
+        row = conn.execute(sql, params).fetchone()
+    total = float(row["total"]) if row is not None else 0.0
+    return {
+        "success": True,
+        "scope": scope,
+        "total": total,
+        "currency": CURRENCY,
+        "includes_special": include_special,
+        "date": start.date().isoformat(),
+    }
 
 
 def get_expenses(

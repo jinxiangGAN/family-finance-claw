@@ -96,6 +96,7 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
+_TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
 _BUDGET_QUERY_RE = re.compile(r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)|看看预算|查预算)\s*[？?]?\s*$")
 _BUDGET_SET_RE = re.compile(
     r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算\s*(?:设为|改成|改为|调整为)\s*(\d+(?:\.\d+)?)\s*$"
@@ -112,6 +113,7 @@ _FAST_WORKBENCH_INTENTS = {
     "record_expense",
     "recent_expenses",
     "month_total",
+    "today_total",
     "budget_query",
     "budget_set",
     "delete_by_id",
@@ -122,6 +124,7 @@ _FAST_INTENT_ACTIONS: dict[str, str] = {
     "record_expense": "finance.record_expense",
     "recent_expenses": "finance.recent_expenses",
     "month_total": "finance.month_total",
+    "today_total": "finance.today_total",
     "budget_query": "finance.budget_query",
     "budget_set": "finance.budget_set",
     "delete_by_id": "finance.delete_by_id",
@@ -553,6 +556,8 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return "recent_expenses"
     if _MONTH_TOTAL_RE.match(stripped):
         return "month_total"
+    if _TODAY_TOTAL_RE.match(stripped):
+        return "today_total"
     if _BUDGET_QUERY_RE.match(stripped):
         return "budget_query"
     if _BUDGET_SET_RE.match(stripped):

@@ -16,6 +16,7 @@ from typing import Any
 from app.config import CATEGORIES, CURRENCY
 from app.database import init_db
 from app.core.observability import log_event, timed_event
+from app.services.expense_service import get_today_total
 from app.services.skills import execute_skill
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ _RECORD_RE = re.compile(
 )
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(?P<expense_id>\d+)\s*$")
 _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\s*笔")
+_TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
 _BUDGET_SET_RE = re.compile(
     r"^\s*(?P<category>[\u4e00-\u9fffA-Za-z_]+)\s*预算\s*(?:设为|改成|改为|调整为)\s*(?P<amount>\d+(?:\.\d+)?)\s*$"
 )
@@ -104,6 +106,13 @@ def _parse_month_total(text: str) -> dict[str, Any]:
     }
 
 
+def _parse_today_total(text: str) -> dict[str, Any]:
+    return {
+        "scope": _infer_scope(text),
+        "include_special": _infer_include_special(text),
+    }
+
+
 def _parse_budget_query(text: str) -> dict[str, Any]:
     return {}
 
@@ -157,6 +166,20 @@ def _render_month_total(result: dict[str, Any]) -> str:
     return f"{label}本月合计是 {total:.2f} {currency}。"
 
 
+def _render_today_total(result: dict[str, Any]) -> str:
+    scope = str(result.get("scope") or "me")
+    label = {
+        "me": "小鸡毛今天",
+        "spouse": "小白今天",
+        "family": "今天家庭",
+    }.get(scope, "今天")
+    total = float(result.get("total", 0))
+    currency = str(result.get("currency") or CURRENCY)
+    if result.get("includes_special"):
+        return f"{label}合计（含专项）是 {total:.2f} {currency}。"
+    return f"{label}合计是 {total:.2f} {currency}。"
+
+
 def _render_budget_query(result: dict[str, Any]) -> str:
     budgets = result.get("budgets") or []
     if not budgets:
@@ -181,6 +204,7 @@ _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "record_expense": ("record_expense", _parse_record_expense),
     "recent_expenses": ("query_recent_expenses", _parse_recent_expenses),
     "month_total": ("query_monthly_total", _parse_month_total),
+    "today_total": ("query_today_total", _parse_today_total),
     "budget_query": ("query_budget", _parse_budget_query),
     "budget_set": ("set_budget", _parse_budget_set),
     "delete_by_id": ("delete_expense_by_id", _parse_delete_by_id),
@@ -190,6 +214,7 @@ _WORKBENCH_RENDERERS: dict[str, Any] = {
     "record_expense": _render_record_expense,
     "recent_expenses": _render_recent_expenses,
     "month_total": _render_month_total,
+    "today_total": _render_today_total,
     "budget_query": _render_budget_query,
     "budget_set": _render_budget_set,
     "delete_by_id": _render_delete_by_id,
@@ -215,7 +240,14 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
         skill_name=skill_name,
         user_id=user_id,
     ):
-        raw_result = execute_skill(skill_name, user_id, user_name, params)
+        if action == "today_total":
+            raw_result = get_today_total(
+                user_id=user_id,
+                scope=str(params.get("scope") or "me"),
+                include_special=bool(params.get("include_special", False)),
+            )
+        else:
+            raw_result = execute_skill(skill_name, user_id, user_name, params)
     renderer = _WORKBENCH_RENDERERS[action]
     success = bool(raw_result.get("success", False))
     reply = renderer(raw_result) if success else str(raw_result.get("message") or "这次操作失败了。")
