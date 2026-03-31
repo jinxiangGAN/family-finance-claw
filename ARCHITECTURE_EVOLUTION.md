@@ -158,6 +158,33 @@ This is a key architectural shift:
 
 > the system is no longer just “calling Codex”; it is starting to manage Codex as an application runtime
 
+### Step 5.5: Move from persistent threads toward a resident Codex process
+
+After thread persistence was added, the next real-world bottleneck became obvious:
+
+- feedback still felt slow
+- database-related turns still paid per-turn CLI startup cost
+- the owner explicitly wanted Codex to be truly resident, not just session-aware
+
+That led to the next step:
+
+```text
+Telegram
+-> resident agent service
+-> Codex session manager
+-> resident codex app-server
+-> bridge_ops
+-> skills
+-> SQLite
+```
+
+This is an important distinction:
+
+- persistent thread means continuity of context
+- persistent process means lower turn startup overhead and a more agent-like runtime
+
+The repo now prefers a resident `codex app-server` runtime and falls back to `exec/resume` only when necessary.
+
 ### Step 6: Prepare for multi-assistant orchestration
 
 The final direction was not just “make one finance bot better”.
@@ -185,7 +212,8 @@ Telegram
 -> assistant router
 -> resident agent service
 -> codex session manager
--> codex exec / codex exec resume
+-> resident codex app-server (preferred)
+-> codex exec / codex exec resume (fallback)
 -> app.bridge_ops
 -> skills
 -> SQLite
@@ -198,6 +226,7 @@ Important points:
 - Codex is the orchestrator.
 - SQLite is the factual store.
 - Session continuity is tied to Codex thread ids.
+- Runtime residency is now tied to a long-lived `codex app-server` process when available.
 
 ## 6. What Improved Because of This Evolution
 
@@ -232,12 +261,13 @@ It is closer to:
 
 The project has moved a long way, but it is useful to be clear about what is still transitional.
 
-### 7.1 Not a fully interactive always-live Codex subprocess
+### 7.1 Resident runtime is now present, but still maturing
 
-The current resident layer uses persisted thread ids and `resume`, which already gives continuity.
+The system now has a real resident runtime path through `codex app-server`.
 
-That is strong enough for a practical Telegram bot, but it is not the same as:
-- one forever-running interactive TTY subprocess per chat
+That is a major step up from pure per-turn `exec`, but it is still not the same as:
+- one forever-running interactive subprocess per chat
+- a complete outer multi-repo gateway service
 
 ### 7.2 Multi-assistant outer gateway is prepared, not fully built
 

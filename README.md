@@ -30,7 +30,7 @@ Telegram
 -> assistant router
 -> resident agent service
 -> Codex session manager
--> Codex CLI (exec / resume)
+-> resident Codex runtime (app-server preferred, exec/resume fallback)
 -> bridge_ops
 -> skills
 -> SQLite
@@ -67,17 +67,23 @@ Codex
 
 This keeps amounts and historical claims grounded in the database instead of free-form generation.
 
-### 3. Session-aware Codex threads
+### 3. Session-aware Codex threads and resident runtime
 
 The bot now tracks Codex sessions by:
 - `assistant_id`
 - `user_id`
 - `chat_id`
 
-The current runtime already supports:
-- first turn via `codex exec`
-- later turns via stored Codex thread id + `codex exec resume`
+The current runtime now supports:
+- a resident `codex app-server` process when available
+- stored Codex thread ids per Telegram thread
+- `app-server` first, with `exec/resume` as fallback
 - persistence of chat-to-thread mapping in `data/codex_sessions.json`
+
+Threading rules are:
+- private chat -> personal thread
+- family group chat -> family thread
+- another group chat -> another separate family thread
 
 ### 4. Future multi-assistant path
 
@@ -107,7 +113,7 @@ Even though the repo currently runs one assistant, the structure now leaves room
   Service abstraction that Telegram talks to.
 
 - [`app/core/codex_session.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/codex_session.py)
-  Codex runtime/session state, persistent thread ids, resume fallback logic.
+  Codex runtime/session state, resident `app-server`, persistent thread ids, and fallback logic.
 
 - [`app/core/assistant_registry.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/assistant_registry.py)
   Assistant definitions and optional JSON-based registry loading.
@@ -210,6 +216,8 @@ DATABASE_PATH=/absolute/path/to/family-finance-claw/data/expenses.db
 CODEX_SESSION_STORE_PATH=/absolute/path/to/family-finance-claw/data/codex_sessions.json
 DEFAULT_ASSISTANT_ID=family-finance
 DEFAULT_ASSISTANT_NAME=小灰毛
+CODEX_RUNTIME_MODE=app-server
+CODEX_SERVICE_TIER=fast
 ```
 
 ### 3. Make sure Codex is logged in
@@ -230,6 +238,14 @@ CODEX_HOME=$(pwd)/codex-home codex login
 ```bash
 python -m app.main
 ```
+
+If you want a safer rollout on a VM, use:
+
+```env
+CODEX_RUNTIME_MODE=auto
+```
+
+That will prefer the resident `app-server` runtime and fall back to the older `exec/resume` path if needed.
 
 ## Docker
 
