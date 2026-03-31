@@ -206,6 +206,38 @@ So the repo added a simple-finance fast path:
 
 This was a performance optimization without abandoning the Codex-centric architecture.
 
+### Step 5.7: Move hot actions and terminal commands onto a resident action registry
+
+Once the simple-finance fast path existed, the next insight was that the repo
+was still paying too much shell/process overhead:
+
+- Codex could think resident
+- but many hot actions still jumped through `python -m ...`
+- and several Telegram commands still had their own side paths
+
+So the repo introduced a resident action registry and started moving both hot
+business actions and command-style terminal actions onto the same in-process
+surface.
+
+This changed the shape from:
+
+```text
+Codex
+-> shell
+-> python -m workbench
+```
+
+toward:
+
+```text
+Codex
+-> resident action registry
+-> in-process workbench
+```
+
+It also made runtime health more visible by exposing degraded/fallback state
+instead of silently getting slower when resident runtime had to back off.
+
 ### Step 6: Prepare for multi-assistant orchestration
 
 The final direction was not just “make one finance bot better”.
@@ -235,7 +267,10 @@ Telegram
 -> codex session manager
 -> resident codex app-server (preferred)
 -> codex exec / codex exec resume (fallback)
--> app.bridge_ops
+-> resident action registry
+   -> finance workbench
+   -> terminal workbench
+   -> resident bridge surface
 -> skills
 -> SQLite
 ```

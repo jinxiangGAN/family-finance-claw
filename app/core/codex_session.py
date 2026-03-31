@@ -44,6 +44,10 @@ class CodexSessionState:
     transport: str = "exec"
     persistent_session_id: Optional[str] = None
     last_error: str = ""
+    active_runtime: str = "exec"
+    degraded_mode: bool = False
+    fallback_active: bool = False
+    degraded_reason: str = ""
 
     def touch(self) -> None:
         self.last_active_at = time.time()
@@ -636,6 +640,85 @@ class CompositeCodexRuntime:
     def __init__(self) -> None:
         self.exec_runtime = CodexExecRuntime()
         self.app_server_runtime = CodexAppServerRuntime()
+        self._runtime_status: dict[str, dict[str, Any]] = {}
+
+    def _set_runtime_status(
+        self,
+        *,
+        config: AssistantConfig,
+        state: CodexSessionState,
+        active_runtime: str,
+        degraded_mode: bool,
+        fallback_active: bool,
+        degraded_reason: str = "",
+    ) -> None:
+        prior = self._runtime_status.get(config.assistant_id, {})
+        state.active_runtime = active_runtime
+        state.degraded_mode = degraded_mode
+        state.fallback_active = fallback_active
+        state.degraded_reason = degraded_reason
+
+        payload = {
+            "configured_mode": (CODEX_RUNTIME_MODE or "auto").lower(),
+            "provider": config.runtime_provider or "codex",
+            "active_runtime": active_runtime,
+            "transport": state.transport,
+            "degraded_mode": degraded_mode,
+            "fallback_active": fallback_active,
+            "degraded_reason": degraded_reason,
+            "updated_at": round(time.time(), 3),
+        }
+        self._runtime_status[config.assistant_id] = payload
+
+        prior_degraded = bool(prior.get("degraded_mode"))
+        prior_active_runtime = str(prior.get("active_runtime") or "")
+        if degraded_mode and (
+            not prior_degraded
+            or prior_active_runtime != active_runtime
+            or str(prior.get("degraded_reason") or "") != degraded_reason
+        ):
+            log_event(
+                logger,
+                "codex_runtime.degraded",
+                assistant_id=config.assistant_id,
+                active_runtime=active_runtime,
+                transport=state.transport,
+                reason=degraded_reason,
+            )
+        elif prior_degraded and not degraded_mode:
+            log_event(
+                logger,
+                "codex_runtime.recovered",
+                assistant_id=config.assistant_id,
+                active_runtime=active_runtime,
+                transport=state.transport,
+            )
+
+    def get_status(self, config: AssistantConfig, state: Optional[CodexSessionState] = None) -> dict[str, Any]:
+        payload = {
+            "configured_mode": (CODEX_RUNTIME_MODE or "auto").lower(),
+            "provider": config.runtime_provider or "codex",
+            "active_runtime": "unknown",
+            "transport": "unknown",
+            "degraded_mode": False,
+            "fallback_active": False,
+            "degraded_reason": "",
+        }
+        payload.update(self._runtime_status.get(config.assistant_id, {}))
+        if state is not None:
+            payload.update(
+                {
+                    "active_runtime": state.active_runtime or payload["active_runtime"],
+                    "transport": state.transport or payload["transport"],
+                    "degraded_mode": state.degraded_mode,
+                    "fallback_active": state.fallback_active,
+                    "degraded_reason": state.degraded_reason,
+                    "last_error": state.last_error,
+                    "thread_id": state.persistent_session_id or "",
+                    "turn_count": state.turn_count,
+                }
+            )
+        return payload
 
     async def run(
         self,
@@ -646,18 +729,60 @@ class CompositeCodexRuntime:
     ) -> str:
         mode = (CODEX_RUNTIME_MODE or "auto").lower()
         if mode == "exec":
-            return await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+            reply = await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+            self._set_runtime_status(
+                config=config,
+                state=state,
+                active_runtime="exec",
+                degraded_mode=False,
+                fallback_active=False,
+            )
+            return reply
 
         if mode in {"auto", "app-server", "app_server"}:
             try:
-                return await self.app_server_runtime.run(config, state, prompt, image_path=image_path)
-            except Exception:
+                reply = await self.app_server_runtime.run(config, state, prompt, image_path=image_path)
+                self._set_runtime_status(
+                    config=config,
+                    state=state,
+                    active_runtime="app-server",
+                    degraded_mode=False,
+                    fallback_active=False,
+                )
+                return reply
+            except Exception as exc:
                 logger.exception("[APP_SERVER] Falling back to exec runtime")
+                reason = f"resident app-server failed: {exc}"
                 if mode in {"app-server", "app_server"}:
+                    self._set_runtime_status(
+                        config=config,
+                        state=state,
+                        active_runtime="app-server",
+                        degraded_mode=True,
+                        fallback_active=False,
+                        degraded_reason=reason,
+                    )
                     return "常驻 Codex 服务当前失败了，请稍后再试。"
-                return await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+                reply = await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+                self._set_runtime_status(
+                    config=config,
+                    state=state,
+                    active_runtime="exec",
+                    degraded_mode=True,
+                    fallback_active=True,
+                    degraded_reason=reason,
+                )
+                return reply
 
-        return await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+        reply = await self.exec_runtime.run(config, state, prompt, image_path=image_path)
+        self._set_runtime_status(
+            config=config,
+            state=state,
+            active_runtime="exec",
+            degraded_mode=False,
+            fallback_active=False,
+        )
+        return reply
 
 
 def _resolve_codex_state_db(codex_home: str) -> Optional[Path]:
@@ -687,6 +812,10 @@ class CodexSessionManager:
             session = self._restore_or_create(key)
             self._sessions[key] = session
         return session
+
+    def peek(self, assistant_id: str, user_id: int, chat_id: int) -> Optional[CodexSessionState]:
+        key = CodexSessionKey(assistant_id=assistant_id, user_id=user_id, chat_id=chat_id)
+        return self._sessions.get(key)
 
     def reset(self, assistant_id: str, user_id: int, chat_id: int) -> None:
         key = CodexSessionKey(assistant_id=assistant_id, user_id=user_id, chat_id=chat_id)

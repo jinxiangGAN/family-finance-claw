@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 import time as _time
-from datetime import datetime, time
+from datetime import time
 
 from telegram import Update
 from telegram.error import TelegramError
@@ -18,7 +18,8 @@ from telegram.ext import (
 )
 from zoneinfo import ZoneInfo
 
-from app.core.agent import agent_handle, agent_handle_export, agent_handle_image, reset_agent_context
+from app.core.agent import agent_handle, agent_handle_image
+from app.core.action_registry import run_action
 from app.config import (
     ALLOWED_USER_IDS,
     BOT_BACKEND,
@@ -33,7 +34,7 @@ from app.config import (
 from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.core.observability import log_event
-from app.core.session import get_or_create_session, reset_session
+from app.core.session import get_or_create_session
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def _build_help_text(session, categories_text: str) -> str:
         "  `/reset` — 清空当前聊天上下文\n"
         "  `/delete` — 进入删除最近一条账目的流程\n"
         "  `/export` — 导出 CSV\n"
-        "  `/usage` — 查看当前运行模式\n\n"
+        "  `/usage` — 查看当前运行状态（含降级/回退）\n\n"
         f"*分类*：{categories_text}\n"
         f"*货币*：{CURRENCY}（支持 CNY/USD/AUD/JPY/MYR/EUR 等）"
     )
@@ -178,44 +179,65 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_name = session.display_name
 
     scope = "family" if context.args and context.args[0] == "family" else "me"
+    result = run_action(
+        "terminal.export_csv",
+        user_id,
+        user_name,
+        "",
+        params={"scope": scope},
+    )
+    payload = result.get("payload") or {}
+    csv_content = str(payload.get("csv_content") or "")
+    if not result.get("success") or not csv_content:
+        await update.message.reply_text(_safe_reply_text(result.get("reply", "")))  # type: ignore[union-attr]
+        return
 
-    csv_content = await agent_handle_export(user_id, user_name, scope)
-    if csv_content:
-        tz = ZoneInfo(TIMEZONE)
-        now = datetime.now(tz)
-        filename = f"expenses_{scope}_{now.strftime('%Y%m%d')}.csv"
-        buf = io.BytesIO(csv_content.encode("utf-8-sig"))
-        buf.name = filename
-        await update.message.reply_document(  # type: ignore[union-attr]
-            document=buf,
-            filename=filename,
-            caption=f"📤 {scope} 账单导出完成（{csv_content.count(chr(10))} 条记录）",
-        )
-    else:
-        await update.message.reply_text("没有可导出的数据。")  # type: ignore[union-attr]
+    filename = str(payload.get("filename") or f"expenses_{scope}.csv")
+    caption = str(payload.get("caption") or "📤 账单导出完成")
+    buf = io.BytesIO(csv_content.encode("utf-8-sig"))
+    buf.name = filename
+    await update.message.reply_document(  # type: ignore[union-attr]
+        document=buf,
+        filename=filename,
+        caption=caption,
+    )
 
 
 async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_access(update):
         return
-    await update.message.reply_text(  # type: ignore[union-attr]
-        "🤖 当前运行模式：Telegram -> 本地 Codex CLI\n\n"
-        "这个版本不再直接调用外部 LLM API；收到消息后会交给本机 Codex 处理，"
-        "再复用仓库里的 skills 和 SQLite 账本。",
+    user = update.effective_user  # type: ignore[union-attr]
+    session = _get_session(update)
+    result = run_action(
+        "terminal.runtime_status",
+        user.id,
+        session.display_name,
+        "",
+        params={
+            "assistant_id": session.assistant_id,
+            "chat_id": session.chat_id,
+        },
     )
+    await update.message.reply_text(_safe_reply_text(result.get("reply", "")))  # type: ignore[union-attr]
 
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _check_access(update):
         return
     user = update.effective_user  # type: ignore[union-attr]
-    chat = update.effective_chat  # type: ignore[union-attr]
     session = _get_session(update)
-    reset_agent_context(user.id, chat.id, assistant_id=session.assistant_id, is_group=session.is_group)
-    reset_session(user.id, chat.id)
-    await update.message.reply_text(  # type: ignore[union-attr]
-        "好啦，这段聊天上下文已经清空了。账目、记忆和画像都还在，小灰毛只是把这段临时状态放下了。"
+    result = run_action(
+        "terminal.reset_context",
+        user.id,
+        session.display_name,
+        "",
+        params={
+            "assistant_id": session.assistant_id,
+            "chat_id": session.chat_id,
+            "is_group": session.is_group,
+        },
     )
+    await update.message.reply_text(_safe_reply_text(result.get("reply", "")))  # type: ignore[union-attr]
 
 
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,23 +245,15 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await _check_access(update):
         return
     user_id = update.effective_user.id  # type: ignore[union-attr]
-
-    from app.core.memory import get_recent_memories
-    memories = get_recent_memories(user_id, limit=15, include_archived=True)
-
-    if not memories:
-        await update.message.reply_text("🧠 小灰毛这边暂时还没有记住什么，之后多聊几句就会慢慢有啦。")  # type: ignore[union-attr]
-        return
-
-    lines = ["🧠 *我记住的信息*\n"]
-    for m in memories:
-        prefix = "🔴" if m["importance"] >= 8 else "🟡" if m["importance"] >= 5 else "🟢"
-        scope = "家庭" if m.get("scope") == "family" else "个人"
-        status = "active" if m.get("is_active", True) else "archived"
-        lines.append(f"  {prefix} #{m['id']} [{scope}/{m['category']}/{status}] {m['content']}")
-
-    lines.append("\n💡 说「归档记忆 #ID」会归档某条记忆；说「把记忆 #ID 改成 ...」可以迭代更新")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")  # type: ignore[union-attr]
+    session = _get_session(update)
+    result = run_action(
+        "terminal.list_memories",
+        user_id,
+        session.display_name,
+        "",
+        params={"limit": 15, "include_archived": True},
+    )
+    await update.message.reply_text(_safe_reply_text(result.get("reply", "")))  # type: ignore[union-attr]
 
 
 # ───────────────── Message handlers ─────────────────

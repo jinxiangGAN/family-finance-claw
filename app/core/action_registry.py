@@ -25,6 +25,7 @@ from app.bridge_ops import store_memory_entry
 from app.core.family_workbench import run_workbench_action as run_family_workbench_action
 from app.core.finance_workbench import run_workbench_action as run_finance_workbench_action
 from app.core.observability import log_event, timed_event
+from app.core.terminal_workbench import run_workbench_action as run_terminal_workbench_action
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,20 @@ _ACTION_MAP: dict[str, tuple[str, str]] = {
     "finance.budget_set": ("finance", "budget_set"),
     "finance.delete_by_id": ("finance", "delete_by_id"),
     "family.forward_message": ("family", "forward_message"),
+    "terminal.runtime_status": ("terminal", "runtime_status"),
+    "terminal.list_memories": ("terminal", "list_memories"),
+    "terminal.export_csv": ("terminal", "export_csv"),
+    "terminal.reset_context": ("terminal", "reset_context"),
 }
 
 
-def run_action(action: str, user_id: int, user_name: str, text: str) -> dict[str, Any]:
+def run_action(
+    action: str,
+    user_id: int,
+    user_name: str,
+    text: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     target = _ACTION_MAP.get(action)
     if target is None:
         return {
@@ -53,7 +64,9 @@ def run_action(action: str, user_id: int, user_name: str, text: str) -> dict[str
     with timed_event(logger, "action_registry.run_action", action=action, user_id=user_id):
         if namespace == "finance":
             return run_finance_workbench_action(workbench_action, user_id, user_name, text)
-        return run_family_workbench_action(workbench_action, user_id, user_name, text)
+        if namespace == "family":
+            return run_family_workbench_action(workbench_action, user_id, user_name, text)
+        return run_terminal_workbench_action(workbench_action, user_id, user_name, text, params=params)
 
 
 class _ThreadingUnixStreamHTTPServer(ThreadingMixIn, UnixStreamServer):
@@ -91,6 +104,9 @@ class _ActionRegistryHandler(BaseHTTPRequestHandler):
             user_id = int(payload.get("user_id"))
             user_name = str(payload.get("user_name") or "")
             text = str(payload.get("text") or "")
+            params = payload.get("params") or {}
+            if not isinstance(params, dict):
+                raise ValueError("params must be an object")
         except Exception as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"bad_request: {exc}"})
             return
@@ -103,7 +119,7 @@ class _ActionRegistryHandler(BaseHTTPRequestHandler):
             text_preview=text[:80],
         )
         try:
-            result = run_action(action, user_id, user_name, text)
+            result = run_action(action, user_id, user_name, text, params=params)
         except Exception as exc:
             logger.exception("Action registry run failed")
             self._send_json(

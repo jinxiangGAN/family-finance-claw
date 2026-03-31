@@ -45,3 +45,33 @@ class ProviderRuntimeRouter:
             prompt,
             image_path=image_path,
         )
+
+    def get_status(
+        self,
+        config: AssistantConfig,
+        state: Optional[CodexSessionState] = None,
+    ) -> dict[str, object]:
+        provider = (config.runtime_provider or "codex").strip().lower()
+        runtime = self._providers.get(provider)
+        if runtime is None:
+            return {
+                "provider": provider,
+                "configured_mode": "unknown",
+                "active_runtime": "unavailable",
+                "transport": "unknown",
+                "degraded_mode": True,
+                "fallback_active": False,
+                "degraded_reason": f"provider `{provider}` is not registered",
+            }
+        get_status = getattr(runtime, "get_status", None)
+        if callable(get_status):
+            return get_status(config, state)
+        return {
+            "provider": provider,
+            "configured_mode": "unknown",
+            "active_runtime": "unknown",
+            "transport": state.transport if state else "unknown",
+            "degraded_mode": False,
+            "fallback_active": False,
+            "degraded_reason": "",
+        }

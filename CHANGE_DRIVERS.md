@@ -182,6 +182,19 @@ Outcome:
 - the allowed tool path is narrowed to one expected skill for common expense and budget actions
 - a finance workbench layer was added so simple turns can hit a fixed action surface instead of a broader agent/tool planning loop
 
+### Make Telegram more like a thin terminal
+
+Why it was requested:
+- the owner wants Codex to feel like the real interaction surface
+- Telegram should behave more like a phone terminal than a second control plane
+- high-frequency actions should stop paying repeated shell-to-Python startup overhead
+
+Outcome:
+- a resident action registry was introduced as the shared in-process execution surface
+- hot finance actions and bridge operations were moved onto that resident surface
+- command-style terminal actions such as runtime status, memory listing, export preparation, and context reset were also moved toward the same shared action surface
+- runtime degradation and fallback state is now surfaced instead of staying implicit
+
 ## Documentation
 
 ### Keep the architectural story reviewable

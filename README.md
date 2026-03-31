@@ -37,8 +37,10 @@ Telegram
 -> resident agent service
 -> Codex session manager
 -> resident Codex runtime (app-server preferred, exec/resume fallback)
--> finance workbench for simple turns
--> bridge_ops
+-> resident action registry
+   -> finance workbench for simple turns
+   -> terminal workbench for command-style actions
+   -> resident bridge surface
 -> skills
 -> SQLite
 ```
@@ -85,6 +87,7 @@ The current runtime now supports:
 - a resident `codex app-server` process when available
 - stored Codex thread ids per Telegram thread
 - `app-server` first, with `exec/resume` as fallback
+- explicit degraded/fallback state so runtime downgrades are visible
 - persistence of chat-to-thread mapping in `data/codex_sessions.json`
 - runtime/provider-facing configuration, so the upper service layer is not permanently locked to Codex
 
@@ -129,6 +132,12 @@ Even though the repo currently runs one assistant, the structure now leaves room
 
 - [`app/core/finance_workbench.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/finance_workbench.py)
   Fixed action surface for common finance turns such as simple expense recording, recent records, monthly total, budget query, budget update, and delete-by-id.
+
+- [`app/core/terminal_workbench.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/terminal_workbench.py)
+  Resident action surface for terminal-style commands such as runtime status, memory listing, export preparation, and context reset.
+
+- [`app/core/action_registry.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/action_registry.py)
+  In-process Unix-socket action gateway that lets Codex and Telegram handlers share one resident execution surface instead of shelling out to fresh Python processes.
 
 - [`app/core/assistant_registry.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/assistant_registry.py)
   Assistant definitions and optional JSON-based registry loading.

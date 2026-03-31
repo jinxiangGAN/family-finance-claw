@@ -78,5 +78,20 @@ class ResidentAgentService:
     def reset(self, user_id: int, chat_id: int, assistant_id: str = DEFAULT_ASSISTANT_ID) -> None:
         self.session_manager.reset(assistant_id=assistant_id, user_id=user_id, chat_id=chat_id)
 
+    def get_runtime_status(
+        self,
+        *,
+        assistant_id: str = DEFAULT_ASSISTANT_ID,
+        user_id: int,
+        chat_id: int,
+    ) -> dict[str, object]:
+        assistant = self.registry.get(assistant_id)
+        state = self.session_manager.peek(
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=chat_id,
+        )
+        return self.runtime.get_status(assistant, state)
+
 
 DEFAULT_RESIDENT_AGENT_SERVICE = ResidentAgentService()
