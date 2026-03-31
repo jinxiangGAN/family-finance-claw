@@ -169,6 +169,7 @@ Outcome:
 - a simple-finance fast path was added
 - common turns now use a much smaller Codex prompt
 - the allowed tool path is narrowed to one expected skill for common expense and budget actions
+- a finance workbench layer was added so simple turns can hit a fixed action surface instead of a broader agent/tool planning loop
 
 ## Documentation
 

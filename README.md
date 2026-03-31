@@ -12,7 +12,7 @@ It supports daily expense tracking, budget management, memory confirmation, spec
 For latency-sensitive common turns, the bot now also uses a simple-finance fast path:
 - still handled by Codex
 - but with a much smaller prompt
-- and a single allowed skill/tool path for common expense and budget actions
+- and a single finance workbench action path for common expense and budget actions
 
 ## What It Does
 
@@ -37,6 +37,7 @@ Telegram
 -> resident agent service
 -> Codex session manager
 -> resident Codex runtime (app-server preferred, exec/resume fallback)
+-> finance workbench for simple turns
 -> bridge_ops
 -> skills
 -> SQLite
@@ -120,6 +121,9 @@ Even though the repo currently runs one assistant, the structure now leaves room
 
 - [`app/core/codex_session.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/codex_session.py)
   Codex runtime/session state, resident `app-server`, persistent thread ids, and fallback logic.
+
+- [`app/core/finance_workbench.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/finance_workbench.py)
+  Fixed action surface for common finance turns such as simple expense recording, recent records, monthly total, budget query, budget update, and delete-by-id.
 
 - [`app/core/assistant_registry.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/assistant_registry.py)
   Assistant definitions and optional JSON-based registry loading.

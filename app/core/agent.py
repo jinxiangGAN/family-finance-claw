@@ -633,32 +633,24 @@ def _build_fast_prompt(
 ) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-    allowed_skills = {
-        "record_expense": "record_expense",
-        "recent_expenses": "query_recent_expenses",
-        "month_total": "query_monthly_total",
-        "budget_query": "query_budget",
-        "budget_set": "set_budget",
-        "delete_by_id": "delete_expense_by_id",
-    }
-    required_skill = allowed_skills[fast_intent]
     intent_note = {
-        "record_expense": "This is a simple expense-recording turn. Prefer one direct skill call and one short confirmation reply.",
-        "recent_expenses": "This is a simple recent-records query. Prefer one direct skill call and list the results briefly.",
-        "month_total": "This is a simple current-month total query. Prefer one direct skill call and one short grounded answer.",
-        "budget_query": "This is a simple budget-status query. Prefer one direct skill call and one short grounded answer.",
-        "budget_set": "This is a simple budget-update turn. Prefer one direct skill call and one short grounded answer.",
-        "delete_by_id": "This is a simple delete-by-id turn. Prefer one direct skill call and one short grounded answer.",
+        "record_expense": "simple expense recording",
+        "recent_expenses": "simple recent-records query",
+        "month_total": "simple current-month total query",
+        "budget_query": "simple budget-status query",
+        "budget_set": "simple budget update",
+        "delete_by_id": "simple delete-by-id",
     }[fast_intent]
     return f"""Fast finance turn for `小灰毛`.
 
 Reply in Simplified Chinese only.
-Use exactly one skill: `{required_skill}`.
+Use exactly one finance workbench action: `{fast_intent}`.
 Only run:
-`PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name {required_skill} --params-json '<json>'`
+`PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.core.finance_workbench --user-id {user_id} --user-name "{user_name}" --action {fast_intent} --text '<original user text>'`
 
-Do not inspect repo files. Do not use other skills. Keep the reply short.
-If parsing is ambiguous, ask one short clarification question.
+The workbench already parses the user text and runs the correct database action.
+Do not inspect repo files. Do not use bridge_ops. Do not use other skills. Keep the reply short.
+If the message is genuinely too ambiguous for the workbench, ask one short clarification question.
 
 Time: {now}
 Currency: {CURRENCY}
