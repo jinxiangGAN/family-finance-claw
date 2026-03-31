@@ -1,6 +1,6 @@
 # Architecture Evolution: API Bot to Codex Agent Service
 
-This document explains why the project changed, what changed, and how to talk about the system clearly during review, retrospectives, or interviews.
+This document explains why the project changed, what changed, and how to describe the system clearly during review, retrospectives, or design discussions.
 
 ## 1. Original State
 
@@ -299,9 +299,9 @@ The repo now has:
 
 But the external orchestration layer that truly manages multiple repos from one top-level service is still future work.
 
-## 8. How To Explain This In an Interview
+## 8. Concise Summary
 
-A good concise version is:
+One concise way to describe the system is:
 
 > I started with a Telegram finance bot built around a hosted LLM API, but as the product matured I needed tighter control over tool usage, memory, and database grounding. I migrated the system to a local Codex-driven architecture where Telegram is only the interface, Codex is the orchestration layer, `bridge_ops` is the controlled execution gateway, and SQLite is the source of truth. Then I introduced session persistence, thread resume, assistant routing, and a registry abstraction so the system can evolve from a single finance bot into a multi-assistant Codex service across multiple repositories.
 

@@ -176,7 +176,7 @@ Outcome:
 ### Keep the architectural story reviewable
 
 Why it was requested:
-- the owner wanted a clear record for review and interview preparation
+- the owner wanted a clear record for later review and structured retrospective
 - it should explain not only what changed, but the reasoning behind the evolution
 
 Outcome:
