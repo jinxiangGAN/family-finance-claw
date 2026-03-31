@@ -13,7 +13,7 @@ import logging
 import re
 from typing import Any
 
-from app.config import CATEGORIES, CURRENCY
+from app.config import CATEGORIES, CURRENCY, FAMILY_MEMBERS
 from app.database import init_db
 from app.core.observability import log_event, timed_event
 from app.services.expense_service import get_today_total
@@ -97,7 +97,29 @@ def _normalize_record_text(text: str) -> str:
     return stripped.strip()
 
 
-def _parse_record_expense(text: str) -> dict[str, Any]:
+def _resolve_expense_owner(text: str, user_id: int, user_name: str) -> tuple[int, str]:
+    stripped = text.strip()
+    if re.search(r"(?:^|[，,\s])我(?:花的|付的|出的|来付)\s*$", stripped):
+        return user_id, user_name
+
+    for member_id, member_name in FAMILY_MEMBERS.items():
+        escaped = re.escape(member_name)
+        if re.search(rf"(?:^|[，,\s]){escaped}(?:花的|付的|出的|来付)\s*$", stripped):
+            return member_id, member_name
+
+    if "老婆花的" in stripped or "老婆付的" in stripped or "老婆出的" in stripped:
+        for member_id, member_name in FAMILY_MEMBERS.items():
+            if member_name == "小白":
+                return member_id, member_name
+    if "老公花的" in stripped or "老公付的" in stripped or "老公出的" in stripped:
+        for member_id, member_name in FAMILY_MEMBERS.items():
+            if member_name == "小鸡毛":
+                return member_id, member_name
+
+    return user_id, user_name
+
+
+def _parse_record_expense(text: str, user_id: int, user_name: str) -> dict[str, Any]:
     match = _RECORD_RE.match(_normalize_record_text(text))
     if not match:
         raise ValueError("Could not parse a simple expense from this message.")
@@ -105,11 +127,14 @@ def _parse_record_expense(text: str) -> dict[str, Any]:
     amount = float(match.group("amount"))
     currency = _normalize_currency(match.group("currency"))
     category = _infer_category(note)
+    owner_user_id, owner_user_name = _resolve_expense_owner(text, user_id, user_name)
     return {
         "category": category,
         "amount": amount,
         "currency": currency,
         "note": note,
+        "owner_user_id": owner_user_id,
+        "owner_user_name": owner_user_name,
     }
 
 
@@ -271,29 +296,34 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
     if action not in _WORKBENCH_ACTIONS:
         raise ValueError(f"Unsupported workbench action: {action}")
     skill_name, parser = _WORKBENCH_ACTIONS[action]
-    params = parser(text)
+    if action == "record_expense":
+        params = parser(text, user_id, user_name)
+    else:
+        params = parser(text)
+    effective_user_id = int(params.pop("owner_user_id", user_id))
+    effective_user_name = str(params.pop("owner_user_name", user_name))
     log_event(
         logger,
         "finance_workbench.action_start",
         action=action,
         skill_name=skill_name,
-        user_id=user_id,
+        user_id=effective_user_id,
     )
     with timed_event(
         logger,
         "finance_workbench.action_complete",
         action=action,
         skill_name=skill_name,
-        user_id=user_id,
+        user_id=effective_user_id,
     ):
         if action == "today_total":
             raw_result = get_today_total(
-                user_id=user_id,
+                user_id=effective_user_id,
                 scope=str(params.get("scope") or "me"),
                 include_special=bool(params.get("include_special", False)),
             )
         else:
-            raw_result = execute_skill(skill_name, user_id, user_name, params)
+            raw_result = execute_skill(skill_name, effective_user_id, effective_user_name, params)
     renderer = _WORKBENCH_RENDERERS[action]
     success = bool(raw_result.get("success", False))
     reply = renderer(raw_result) if success else str(raw_result.get("message") or "这次操作失败了。")
