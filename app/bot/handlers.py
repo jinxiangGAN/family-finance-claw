@@ -3,6 +3,7 @@
 import io
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, time
 
@@ -22,6 +23,7 @@ from app.config import (
     BOT_BACKEND,
     CATEGORIES,
     CURRENCY,
+    FAMILY_MEMBERS,
     TELEGRAM_BOT_TOKEN,
     TIMEZONE,
     WEEKLY_SUMMARY_DAY,
@@ -33,6 +35,10 @@ from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session, reset_session
 
 logger = logging.getLogger(__name__)
+
+_FORWARD_MESSAGE_RE = re.compile(
+    r"^\s*(?:给|发消息给|帮我发给|转告|转发给)\s*(?P<target>[^\s:：]+)\s*(?:发消息|带句话|说|：|:)?\s*(?P<body>.+?)\s*$"
+)
 
 _HELP_LIKE_TEXTS = {
     "help",
@@ -104,7 +110,10 @@ def _build_help_text(session, categories_text: str) -> str:
         "  `你还记得什么`\n"
         "  `归档记忆 #12`\n"
         "  `把记忆 #12 改成 ...`\n\n"
-        "*6. 常用命令*\n"
+        "*6. 代发消息*\n"
+        "  `给小白发消息：今晚我晚点回家`\n"
+        "  `转告小鸡毛：记得买牛奶`\n\n"
+        "*7. 常用命令*\n"
         "  `/help` — 查看这份功能地图\n"
         "  `/memory` — 查看记忆\n"
         "  `/reset` — 清空当前聊天上下文\n"
@@ -121,6 +130,41 @@ def _build_help_text(session, categories_text: str) -> str:
         help_text += "\n\n💡 你也可以直接问我：`你会什么`、`怎么改记忆`、`怎么开始旅行计划`。"
 
     return help_text
+
+
+def _resolve_family_member_id(identifier: str, *, exclude_user_id: int | None = None) -> int | None:
+    normalized = identifier.strip().lower()
+    alias_map: dict[str, int] = {}
+    for uid, name in FAMILY_MEMBERS.items():
+        alias_map[name.lower()] = uid
+    # Friendly aliases for the current 2-person household.
+    for uid, name in FAMILY_MEMBERS.items():
+        if "小白" in name:
+            alias_map.setdefault("老婆", uid)
+            alias_map.setdefault("妻子", uid)
+        if "小鸡毛" in name:
+            alias_map.setdefault("老公", uid)
+            alias_map.setdefault("丈夫", uid)
+
+    target_id = alias_map.get(normalized)
+    if target_id is None:
+        return None
+    if exclude_user_id is not None and target_id == exclude_user_id:
+        return None
+    return target_id
+
+
+def _parse_forward_message(text: str, *, sender_user_id: int) -> tuple[int, str] | None:
+    match = _FORWARD_MESSAGE_RE.match(text.strip())
+    if not match:
+        return None
+    target_id = _resolve_family_member_id(match.group("target"), exclude_user_id=sender_user_id)
+    if target_id is None:
+        return None
+    body = match.group("body").strip()
+    if not body:
+        return None
+    return target_id, body
 
 
 # ───────────────── Commands ─────────────────
@@ -261,6 +305,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id: int = user.id
     session = _get_session(update)
     user_name: str = session.display_name
+    forward_request = _parse_forward_message(text, sender_user_id=user_id)
+    if forward_request:
+        target_id, body = forward_request
+        target_name = FAMILY_MEMBERS.get(target_id, str(target_id))
+        sender_name = session.display_name
+        forwarded_text = (
+            f"📨 小灰毛代转来自 {sender_name} 的消息：\n\n"
+            f"{body}"
+        )
+        await context.bot.send_message(chat_id=target_id, text=forwarded_text)
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"好，我已经转发给 {target_name} 了。"
+        )
+        return
     if text.strip().lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
         await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
