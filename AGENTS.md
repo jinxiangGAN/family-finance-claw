@@ -14,7 +14,8 @@ This repository powers a Telegram-based family finance bot.
 1. Treat the SQLite database as the source of truth for financial facts and stored memories.
 2. Do not invent amounts, totals, budgets, trends, past events, or remembered preferences without reading or writing the database in the current turn.
 3. Prefer existing repository helpers over custom logic:
-   - `app/bridge_ops.py` as the first-choice CLI entrypoint for reads/writes during Telegram bridge handling
+   - the resident action registry as the first-choice execution surface during Telegram bridge handling
+   - `app/bridge_ops.py` as the fallback CLI entrypoint when the resident registry is unavailable
    - `app/services/skills.py`
    - `app/services/expense_service.py`
    - `app/services/stats_service.py`
@@ -48,7 +49,7 @@ This repository powers a Telegram-based family finance bot.
 1. For finance and memory answers, be database-grounded.
 2. If the data is missing or ambiguous, ask a concise follow-up question instead of guessing.
 3. Keep Telegram-facing replies concise, natural, and in Simplified Chinese unless the user asks otherwise.
-4. During Telegram bridge execution, prefer `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops ...` over ad-hoc scripts.
+4. During Telegram bridge execution, prefer the resident action registry over ad-hoc scripts. Use `app.bridge_ops.py` only as a fallback shell entrypoint when the registry is unavailable.
 5. `小灰毛` should support two reply modes:
    - `finance mode`: strict, database-grounded, action-oriented
    - `chat mode`: warm, light, supportive, and more natural for casual family conversation

@@ -19,6 +19,9 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from app.config import ACTION_REGISTRY_SOCKET_PATH
+from app.bridge_ops import run_skill as run_bridge_skill
+from app.bridge_ops import snapshot as bridge_snapshot
+from app.bridge_ops import store_memory_entry
 from app.core.family_workbench import run_workbench_action as run_family_workbench_action
 from app.core.finance_workbench import run_workbench_action as run_finance_workbench_action
 from app.core.observability import log_event, timed_event
@@ -61,16 +64,27 @@ class _ActionRegistryHandler(BaseHTTPRequestHandler):
     server_version = "ActionRegistry/0.1"
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/health":
-            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
+        if self.path == "/health":
+            self._send_json(HTTPStatus.OK, {"ok": True})
             return
-        self._send_json(HTTPStatus.OK, {"ok": True})
+        if self.path.startswith("/bridge/snapshot"):
+            self._handle_bridge_snapshot()
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/run":
-            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
+        if self.path == "/run":
+            self._handle_run()
             return
+        if self.path == "/bridge/skill":
+            self._handle_bridge_skill()
+            return
+        if self.path == "/bridge/store-memory":
+            self._handle_bridge_store_memory()
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
 
+    def _handle_run(self) -> None:
         try:
             payload = self._parse_payload()
             action = str(payload.get("action") or "").strip()
@@ -96,6 +110,73 @@ class _ActionRegistryHandler(BaseHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {"ok": False, "error": f"internal_error: {exc}"},
             )
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _handle_bridge_snapshot(self) -> None:
+        try:
+            _, _, query = self.path.partition("?")
+            params = parse_qs(query, keep_blank_values=True)
+            user_id = int((params.get("user_id") or [""])[-1])
+        except Exception as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"bad_request: {exc}"})
+            return
+
+        log_event(logger, "action_registry.bridge_snapshot", user_id=user_id)
+        try:
+            result = bridge_snapshot(user_id)
+        except Exception as exc:
+            logger.exception("Bridge snapshot failed")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"internal_error: {exc}"})
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _handle_bridge_skill(self) -> None:
+        try:
+            payload = self._parse_payload()
+            user_id = int(payload.get("user_id"))
+            user_name = str(payload.get("user_name") or "")
+            name = str(payload.get("name") or "").strip()
+            params = payload.get("params") or {}
+            if not isinstance(params, dict):
+                raise ValueError("params must be an object")
+        except Exception as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"bad_request: {exc}"})
+            return
+
+        log_event(logger, "action_registry.bridge_skill", user_id=user_id, skill_name=name)
+        try:
+            result = run_bridge_skill(user_id, user_name, name, params)
+        except Exception as exc:
+            logger.exception("Bridge skill failed")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"internal_error: {exc}"})
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _handle_bridge_store_memory(self) -> None:
+        try:
+            payload = self._parse_payload()
+            user_id = int(payload.get("user_id"))
+            content = str(payload.get("content") or "")
+            category = str(payload.get("category") or "general")
+            importance = int(payload.get("importance") or 5)
+            shared = bool(payload.get("shared"))
+        except Exception as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"bad_request: {exc}"})
+            return
+
+        log_event(logger, "action_registry.bridge_store_memory", user_id=user_id, category=category, shared=shared)
+        try:
+            result = store_memory_entry(
+                user_id=user_id,
+                content=content,
+                category=category,
+                importance=importance,
+                shared=shared,
+            )
+        except Exception as exc:
+            logger.exception("Bridge store-memory failed")
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"internal_error: {exc}"})
             return
         self._send_json(HTTPStatus.OK, result)
 

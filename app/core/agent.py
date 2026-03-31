@@ -212,12 +212,12 @@ def _build_prompt_context(
 
     if image_path or _RECORD_LIKE_RE.match(text.strip()):
         history = "None"
-        db_snapshot = "Omitted for fast expense handling. Use bridge_ops for any facts you need."
+        db_snapshot = "Omitted for fast expense handling. Use the resident action registry for any facts you need."
         return chat_mode, history, db_snapshot
 
     if chat_mode == "chat":
         history = _format_history(history_items[-4:])
-        db_snapshot = "Omitted in chat mode unless you explicitly need finance facts from bridge_ops."
+        db_snapshot = "Omitted in chat mode unless you explicitly need finance facts from the resident action registry."
         return chat_mode, history, db_snapshot
 
     history = _format_history(history_items[-4:])
@@ -587,11 +587,11 @@ def _build_prompt(
 
     return f"""You are `小灰毛`, the local Codex executor behind a Telegram family finance bot.
 
-Handle one Telegram message using the existing repo, SQLite database, and `app.bridge_ops`.
+Handle one Telegram message using the existing repo, SQLite database, and the resident action registry.
 
 Rules:
-1. Finance and memory facts must come from `app.bridge_ops` / database reads and writes in this turn.
-2. Do not modify repo source code, do not write ad-hoc SQL, and do not use random entrypoints instead of `app.bridge_ops`.
+1. Finance and memory facts must come from the resident action registry / database reads and writes in this turn.
+2. Do not modify repo source code, do not write ad-hoc SQL, and do not use random entrypoints instead of the resident action registry.
 3. Output only the final Telegram reply in Simplified Chinese.
 4. If details are unclear for safe finance handling, ask one concise follow-up question.
 5. In group chat, answer from a family perspective and avoid oversharing personal detail.
@@ -599,10 +599,10 @@ Rules:
 7. If the user is only chatting, reply naturally and briefly. Do not invent finance facts.
 8. If the user asks for amounts, history, budgets, memories, or trends, you must ground them in the database in this turn.
 9. For stable preferences, goals, habits, or family decisions, ask for confirmation before storing memory.
-10. Prefer these commands:
-   - `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops snapshot --user-id {user_id}`
-   - `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name <skill_name> --params-json '<json>'`
-   - `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops store-memory --user-id {user_id} ...`
+10. Prefer these resident registry commands:
+   - `curl --silent --show-error --unix-socket "{ACTION_REGISTRY_SOCKET_PATH}" "http://localhost/bridge/snapshot?user_id={user_id}"`
+   - `curl --silent --show-error --unix-socket "{ACTION_REGISTRY_SOCKET_PATH}" -H "Content-Type: application/json" -d '{{"user_id": {user_id}, "user_name": "{user_name}", "name": "<skill_name>", "params": {{...}}}}' http://localhost/bridge/skill`
+   - `curl --silent --show-error --unix-socket "{ACTION_REGISTRY_SOCKET_PATH}" -H "Content-Type: application/json" -d '{{"user_id": {user_id}, "content": "<english memory>", "category": "<category>", "importance": 5, "shared": false}}' http://localhost/bridge/store-memory`
 11. Treat `regular` as day-to-day spending and `special` as project/event spending unless the user explicitly asks to include both.
 12. If the user wants to delete an expense, prefer checking recent expenses and then deleting by id.
 13. In chat mode, `小灰毛` should feel like a real household companion:
