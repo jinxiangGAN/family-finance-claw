@@ -208,7 +208,8 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     user = update.effective_user  # type: ignore[union-attr]
     chat = update.effective_chat  # type: ignore[union-attr]
-    reset_agent_context(user.id, chat.id)
+    session = _get_session(update)
+    reset_agent_context(user.id, chat.id, assistant_id=session.assistant_id, is_group=session.is_group)
     reset_session(user.id, chat.id)
     await update.message.reply_text(  # type: ignore[union-attr]
         "已清空当前聊天上下文。短期对话状态已重置，但账目、记忆和画像都保留。"

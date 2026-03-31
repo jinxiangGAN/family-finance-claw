@@ -111,9 +111,14 @@ def _reset_session_history(user_id: int, chat_id: int, assistant_id: str) -> Non
     DEFAULT_RESIDENT_AGENT_SERVICE.reset(user_id=user_id, chat_id=chat_id, assistant_id=assistant_id)
 
 
-def reset_agent_context(user_id: int, chat_id: int) -> None:
+def _thread_owner_id(user_id: int, session: Session) -> int:
+    return 0 if session.is_group else user_id
+
+
+def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
     """Public helper to clear short-term bridge context for one chat."""
-    _reset_session_history(user_id, chat_id, "family-finance")
+    owner_id = 0 if is_group else user_id
+    _reset_session_history(owner_id, chat_id, assistant_id)
 
 
 def _format_history(history: list[dict[str, str]]) -> str:
@@ -454,11 +459,12 @@ def _build_prompt(
 ) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    thread_owner_id = _thread_owner_id(user_id, session)
 
     if session.interaction_count == 0:
-        _reset_session_history(user_id, session.chat_id)
+        _reset_session_history(thread_owner_id, session.chat_id, session.assistant_id)
 
-    history = _format_history(_get_recent_history(user_id, session.chat_id))
+    history = _format_history(_get_recent_history(thread_owner_id, session.chat_id))
     db_snapshot = _format_db_snapshot(user_id)
     family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
     chat_kind = "private chat" if session.is_private else "group chat"
@@ -551,33 +557,34 @@ async def _run_codex(
 
 
 async def agent_handle(text: str, user_id: int, user_name: str, session: Session, assistant_id: str) -> str:
+    thread_owner_id = _thread_owner_id(user_id, session)
     if session.interaction_count == 0:
-        _reset_session_history(user_id, session.chat_id, assistant_id)
+        _reset_session_history(thread_owner_id, session.chat_id, assistant_id)
 
-    pending_action_key = (user_id, session.chat_id)
+    pending_action_key = (thread_owner_id, session.chat_id)
     pending_action = _PENDING_ACTION.get(pending_action_key)
     if pending_action:
         if _is_yes_confirmation(text):
             _PENDING_ACTION.pop(pending_action_key, None)
             original_text = pending_action["original_text"]
             prompt = _build_prompt(text=original_text, user_id=user_id, user_name=user_name, session=session)
-            reply = await _run_codex(prompt, user_id=user_id, chat_id=session.chat_id, assistant_id=assistant_id)
-            return _remember_and_reply(user_id, session.chat_id, text, reply)
+            reply = await _run_codex(prompt, user_id=thread_owner_id, chat_id=session.chat_id, assistant_id=assistant_id)
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         if _is_no_confirmation(text):
             _PENDING_ACTION.pop(pending_action_key, None)
             reply = "好，这次操作我先不执行。"
-            return _remember_and_reply(user_id, session.chat_id, text, reply)
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         _PENDING_ACTION.pop(pending_action_key, None)
 
     memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
     if memory_admin_reply:
-        return _remember_and_reply(user_id, session.chat_id, text, memory_admin_reply)
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, memory_admin_reply)
 
     delete_candidate_reply = _maybe_build_delete_candidate_reply(text, user_id)
     if delete_candidate_reply:
-        return _remember_and_reply(user_id, session.chat_id, text, delete_candidate_reply)
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, delete_candidate_reply)
 
-    pending_key = (user_id, session.chat_id)
+    pending_key = (thread_owner_id, session.chat_id)
     pending = _PENDING_MEMORY.get(pending_key)
     if pending:
         if _is_yes_confirmation(text):
@@ -588,7 +595,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             if not normalized_content:
                 _PENDING_MEMORY.pop(pending_key, None)
                 reply = "这条记忆我这次没能稳定转换成英文摘要，所以先没有入库。你可以稍后再试一次。"
-                return _remember_and_reply(user_id, session.chat_id, text, reply)
+                return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
             memory_id = store_memory(
                 int(pending["target_user_id"]),
@@ -603,18 +610,18 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
                 f"已更新：#{memory_id} [{pending['category']}] {normalized_content}\n"
                 f"类型：{scope}"
             )
-            return _remember_and_reply(user_id, session.chat_id, text, reply)
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         if _is_no_confirmation(text):
             _PENDING_MEMORY.pop(pending_key, None)
             reply = "好，这条我先不记。之后如果你想记下来，直接再告诉我一遍就行。"
-            return _remember_and_reply(user_id, session.chat_id, text, reply)
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         _PENDING_MEMORY.pop(pending_key, None)
 
     memory_candidate = _detect_memory_candidate(user_id, text)
     if memory_candidate:
         if memory_candidate.get("duplicate"):
             reply = f"这条信息我已经记着了：{memory_candidate['content']}"
-            return _remember_and_reply(user_id, session.chat_id, text, reply)
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
         _PENDING_MEMORY[pending_key] = memory_candidate
         scope = "家庭共享记忆" if memory_candidate.get("shared") else "个人记忆"
@@ -624,7 +631,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             f"准备写入：{scope}\n"
             "要我记下来吗？回复“是”或“不要”即可。"
         )
-        return _remember_and_reply(user_id, session.chat_id, text, reply)
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
     write_action = _detect_write_action(text)
     if write_action:
@@ -633,11 +640,11 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             "original_text": text,
         }
         reply = _build_action_confirmation(write_action, text)
-        return _remember_and_reply(user_id, session.chat_id, text, reply)
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
     prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
-    reply = await _run_codex(prompt, user_id=user_id, chat_id=session.chat_id, assistant_id=assistant_id)
-    return _remember_and_reply(user_id, session.chat_id, text, reply)
+    reply = await _run_codex(prompt, user_id=thread_owner_id, chat_id=session.chat_id, assistant_id=assistant_id)
+    return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
 
 async def agent_handle_image(
@@ -648,8 +655,9 @@ async def agent_handle_image(
     session: Session,
     assistant_id: str,
 ) -> str:
+    thread_owner_id = _thread_owner_id(user_id, session)
     if session.interaction_count == 0:
-        _reset_session_history(user_id, session.chat_id, assistant_id)
+        _reset_session_history(thread_owner_id, session.chat_id, assistant_id)
     prompt = _build_prompt(
         text=caption,
         user_id=user_id,
@@ -660,12 +668,12 @@ async def agent_handle_image(
     )
     reply = await _run_codex(
         prompt,
-        user_id=user_id,
+        user_id=thread_owner_id,
         chat_id=session.chat_id,
         assistant_id=assistant_id,
         image_path=image_path,
     )
-    return _remember_and_reply(user_id, session.chat_id, caption or "[图片]", reply)
+    return _remember_and_reply(thread_owner_id, session.chat_id, caption or "[图片]", reply)
 
 
 async def agent_handle_export(user_id: int, user_name: str, scope: str = "me") -> Optional[str]:
