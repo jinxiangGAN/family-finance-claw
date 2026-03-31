@@ -5,11 +5,8 @@ forwarded to the local Codex CLI, which can inspect this repository and use the
 existing Python skills/database helpers to manage expenses.
 """
 
-import asyncio
 import logging
-import os
 import re
-import tempfile
 from datetime import datetime
 from typing import Optional
 
@@ -17,12 +14,6 @@ from zoneinfo import ZoneInfo
 
 from app.core.memory import delete_memory, get_memory_manager, get_recent_memories, store_memory, update_memory
 from app.config import (
-    CODEX_BIN,
-    CODEX_HOME,
-    CODEX_MODEL,
-    CODEX_PROFILE,
-    CODEX_TIMEOUT_SECONDS,
-    CODEX_WORKDIR,
     CURRENCY,
     DATABASE_PATH,
     FAMILY_MEMBERS,
@@ -30,9 +21,10 @@ from app.config import (
     PYTHON_BIN,
     TIMEZONE,
 )
+from app.core.resident_agent import DEFAULT_RESIDENT_AGENT_SERVICE
 from app.core.session import Session
 from app.mcp_tools.registry import execute_tool
-from app.services.expense_service import get_recent_expenses
+from app.services.expense_service import get_expenses, get_recent_expenses
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +70,10 @@ _FINANCE_HINT_TOKENS = (
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _ARCHIVE_MEMORY_RE = re.compile(r"^\s*(?:忘掉|忘记|归档)\s*(?:记忆)?\s*#?(\d+)\s*$")
 _UPDATE_MEMORY_RE = re.compile(r"^\s*(?:把)?记忆\s*#?(\d+)\s*(?:改成|更新成|修改为|替换为)\s*(.+?)\s*$")
+_DELETE_BY_DESC_RE = re.compile(
+    r"^\s*删除\s*(\d+(?:\.\d+)?)\s*(?:块|元|rmb|cny|sgd|usd)?\s*([^#\n\r]*)?(?:那笔|这一笔|那条|这条)?\s*$",
+    re.IGNORECASE,
+)
 _WRITE_ACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?:^|\s)(?:删除|删掉|撤销)(?:最近一笔|上一笔|#?\d+|这笔|那笔)?"), "delete an expense record"),
     (re.compile(r"(?:预算.*(?:设为|改成|改为|调整为))"), "update a budget"),
@@ -108,15 +104,16 @@ def _get_recent_history(user_id: int, chat_id: int) -> list[dict[str, str]]:
     return list(_SESSION_HISTORY.get((user_id, chat_id), []))
 
 
-def _reset_session_history(user_id: int, chat_id: int) -> None:
+def _reset_session_history(user_id: int, chat_id: int, assistant_id: str) -> None:
     _SESSION_HISTORY.pop((user_id, chat_id), None)
     _PENDING_MEMORY.pop((user_id, chat_id), None)
     _PENDING_ACTION.pop((user_id, chat_id), None)
+    DEFAULT_RESIDENT_AGENT_SERVICE.reset(user_id=user_id, chat_id=chat_id, assistant_id=assistant_id)
 
 
 def reset_agent_context(user_id: int, chat_id: int) -> None:
     """Public helper to clear short-term bridge context for one chat."""
-    _reset_session_history(user_id, chat_id)
+    _reset_session_history(user_id, chat_id, "family-finance")
 
 
 def _format_history(history: list[dict[str, str]]) -> str:
@@ -221,6 +218,54 @@ def _detect_write_action(text: str, image_path: Optional[str] = None) -> Optiona
     return None
 
 
+def _family_user_ids_for_chat(user_id: int) -> list[int]:
+    member_ids = list(FAMILY_MEMBERS.keys())
+    if not member_ids:
+        return [user_id]
+    if user_id not in member_ids:
+        member_ids.append(user_id)
+    return member_ids
+
+
+def _matches_delete_hint(expense, hint: str) -> bool:
+    normalized = hint.strip().lower()
+    if not normalized:
+        return True
+    haystacks = [
+        expense.note.lower(),
+        expense.category.lower(),
+        expense.user_name.lower(),
+        expense.event_tag.lower(),
+    ]
+    return any(normalized in hay for hay in haystacks if hay)
+
+
+def _find_delete_candidates(text: str, user_id: int) -> list[dict[str, object]]:
+    match = _DELETE_BY_DESC_RE.match(text.strip())
+    if not match:
+        return []
+
+    amount = float(match.group(1))
+    hint = (match.group(2) or "").strip()
+    candidates = []
+    expenses = get_expenses(user_ids=_family_user_ids_for_chat(user_id), limit=30)
+    for expense in expenses:
+        if abs(float(expense.amount) - amount) > 0.01:
+            continue
+        if not _matches_delete_hint(expense, hint):
+            continue
+        candidates.append({
+            "id": expense.id,
+            "user_name": expense.user_name,
+            "category": expense.category,
+            "amount": expense.amount,
+            "currency": expense.currency,
+            "note": expense.note,
+            "created_at": expense.created_at,
+        })
+    return candidates
+
+
 def _looks_like_memory_candidate(text: str) -> bool:
     stripped = text.strip()
     if len(stripped) < 6 or len(stripped) > 120:
@@ -322,7 +367,7 @@ Requirements:
 Original memory:
 {stripped}
 """
-    rewritten = (await _run_codex(prompt)).strip()
+    rewritten = (await _run_codex(prompt, user_id=0, chat_id=0, assistant_id="family-finance")).strip()
     if not rewritten:
         return None
     if _contains_cjk(rewritten):
@@ -359,6 +404,30 @@ async def _maybe_handle_memory_admin(text: str, user_id: int) -> Optional[str]:
         f"旧版本：#{memory_id} -> archived\n"
         f"新版本：#{new_memory_id} -> {normalized_content}"
     )
+
+
+def _maybe_build_delete_candidate_reply(text: str, user_id: int) -> Optional[str]:
+    candidates = _find_delete_candidates(text, user_id)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        item = candidates[0]
+        return (
+            "我找到 1 条匹配的账目：\n"
+            f"#{item['id']} {item['user_name']} / {item['category']} {item['amount']:.2f} {item['currency']} "
+            f"/ 备注：{item['note'] or '无'}\n"
+            "如果要删除它，请回复：`删除 #"
+            f"{item['id']}`"
+        )
+
+    lines = ["我找到几条可能匹配的账目："]
+    for item in candidates[:5]:
+        lines.append(
+            f"#{item['id']} {item['user_name']} / {item['category']} {item['amount']:.2f} {item['currency']} "
+            f"/ 备注：{item['note'] or '无'}"
+        )
+    lines.append("请回复要删除的 ID，例如：`删除 #123`")
+    return "\n".join(lines)
 
 
 def _build_action_confirmation(action_label: str, original_text: str) -> str:
@@ -465,80 +534,25 @@ Current user message:
 """
 
 
-async def _run_codex(prompt: str, image_path: Optional[str] = None) -> str:
-    db_dir = os.path.dirname(os.path.abspath(DATABASE_PATH)) or "."
-    args = [
-        CODEX_BIN,
-        "exec",
-        "--full-auto",
-        "--sandbox",
-        "workspace-write",
-        "--cd",
-        CODEX_WORKDIR,
-        "--add-dir",
-        db_dir,
-        "--output-last-message",
-    ]
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-    output_path = tmp.name
-    tmp.close()
-    args.append(output_path)
-    args.extend(["--color", "never", "--ephemeral"])
-
-    if CODEX_PROFILE:
-        args.extend(["--profile", CODEX_PROFILE])
-    if CODEX_MODEL:
-        args.extend(["--model", CODEX_MODEL])
-    if image_path:
-        args.extend(["--image", image_path])
-
-    args.append(prompt)
-    logger.info("[CODEX] Executing local Codex CLI")
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=CODEX_WORKDIR,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "CODEX_HOME": CODEX_HOME},
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CODEX_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            logger.error("[CODEX] Timed out after %ss", CODEX_TIMEOUT_SECONDS)
-            return "这次处理超时了，请稍后再试一次。"
-
-        if proc.returncode != 0:
-            logger.error(
-                "[CODEX] Exit=%s stdout=%s stderr=%s",
-                proc.returncode,
-                stdout.decode("utf-8", errors="ignore")[:500],
-                stderr.decode("utf-8", errors="ignore")[:500],
-            )
-            return "本地 Codex 处理失败了，请稍后再试。"
-
-        try:
-            with open(output_path, "r", encoding="utf-8") as fh:
-                message = fh.read().strip()
-        except FileNotFoundError:
-            logger.error("[CODEX] Output file missing")
-            return "本地 Codex 没有返回结果，请稍后再试。"
-
-        return message or "操作完成。"
-    finally:
-        try:
-            os.unlink(output_path)
-        except FileNotFoundError:
-            pass
+async def _run_codex(
+    prompt: str,
+    user_id: int,
+    chat_id: int,
+    assistant_id: str,
+    image_path: Optional[str] = None,
+) -> str:
+    return await DEFAULT_RESIDENT_AGENT_SERVICE.run(
+        prompt,
+        assistant_id=assistant_id,
+        user_id=user_id,
+        chat_id=chat_id,
+        image_path=image_path,
+    )
 
 
-async def agent_handle(text: str, user_id: int, user_name: str, session: Session) -> str:
+async def agent_handle(text: str, user_id: int, user_name: str, session: Session, assistant_id: str) -> str:
     if session.interaction_count == 0:
-        _reset_session_history(user_id, session.chat_id)
+        _reset_session_history(user_id, session.chat_id, assistant_id)
 
     pending_action_key = (user_id, session.chat_id)
     pending_action = _PENDING_ACTION.get(pending_action_key)
@@ -547,7 +561,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             _PENDING_ACTION.pop(pending_action_key, None)
             original_text = pending_action["original_text"]
             prompt = _build_prompt(text=original_text, user_id=user_id, user_name=user_name, session=session)
-            reply = await _run_codex(prompt)
+            reply = await _run_codex(prompt, user_id=user_id, chat_id=session.chat_id, assistant_id=assistant_id)
             return _remember_and_reply(user_id, session.chat_id, text, reply)
         if _is_no_confirmation(text):
             _PENDING_ACTION.pop(pending_action_key, None)
@@ -558,6 +572,10 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
     if memory_admin_reply:
         return _remember_and_reply(user_id, session.chat_id, text, memory_admin_reply)
+
+    delete_candidate_reply = _maybe_build_delete_candidate_reply(text, user_id)
+    if delete_candidate_reply:
+        return _remember_and_reply(user_id, session.chat_id, text, delete_candidate_reply)
 
     pending_key = (user_id, session.chat_id)
     pending = _PENDING_MEMORY.get(pending_key)
@@ -618,7 +636,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
         return _remember_and_reply(user_id, session.chat_id, text, reply)
 
     prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
-    reply = await _run_codex(prompt)
+    reply = await _run_codex(prompt, user_id=user_id, chat_id=session.chat_id, assistant_id=assistant_id)
     return _remember_and_reply(user_id, session.chat_id, text, reply)
 
 
@@ -628,9 +646,10 @@ async def agent_handle_image(
     user_id: int,
     user_name: str,
     session: Session,
+    assistant_id: str,
 ) -> str:
     if session.interaction_count == 0:
-        _reset_session_history(user_id, session.chat_id)
+        _reset_session_history(user_id, session.chat_id, assistant_id)
     prompt = _build_prompt(
         text=caption,
         user_id=user_id,
@@ -639,7 +658,13 @@ async def agent_handle_image(
         image_path=image_path,
         caption=caption,
     )
-    reply = await _run_codex(prompt, image_path=image_path)
+    reply = await _run_codex(
+        prompt,
+        user_id=user_id,
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+        image_path=image_path,
+    )
     return _remember_and_reply(user_id, session.chat_id, caption or "[图片]", reply)
 
 

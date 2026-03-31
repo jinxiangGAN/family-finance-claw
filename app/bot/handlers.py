@@ -28,6 +28,7 @@ from app.config import (
     WEEKLY_SUMMARY_HOUR,
 )
 from app.bot.scheduler import budget_alert_job, monthly_archive_job, proactive_nudge_job, weekly_summary_job
+from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session, reset_session
 
@@ -171,7 +172,8 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not await _check_access(update):
         return
     user_id = update.effective_user.id  # type: ignore[union-attr]
-    user_name = update.effective_user.full_name or str(user_id)  # type: ignore[union-attr]
+    session = _get_session(update)
+    user_name = session.display_name
 
     scope = "family" if context.args and context.args[0] == "family" else "me"
 
@@ -250,8 +252,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user = update.effective_user  # type: ignore[union-attr]
     user_id: int = user.id
-    user_name: str = user.full_name or user.username or str(user_id)
     session = _get_session(update)
+    user_name: str = session.display_name
     if text.strip().lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
         await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
@@ -259,7 +261,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     await update.message.chat.send_action("typing")  # type: ignore[union-attr]
 
-    reply = await agent_handle(text, user_id, user_name, session)
+    route = DEFAULT_ASSISTANT_ROUTER.resolve(text, session)
+    if route.unknown_identifier:
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"我现在还没有接入名为「{route.unknown_identifier}」的助手。当前可用的是：小灰毛。"
+        )
+        return
+
+    reply = await agent_handle(route.message_text, user_id, user_name, session, route.assistant_id)
     await update.message.reply_text(reply)  # type: ignore[union-attr]
 
 
@@ -270,12 +279,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     user = update.effective_user  # type: ignore[union-attr]
     user_id: int = user.id
-    user_name: str = user.full_name or user.username or str(user_id)
     session = _get_session(update)
+    user_name: str = session.display_name
+    route = DEFAULT_ASSISTANT_ROUTER.resolve(update.message.caption or "", session)  # type: ignore[union-attr]
+    if route.unknown_identifier:
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"我现在还没有接入名为「{route.unknown_identifier}」的助手。当前可用的是：小灰毛。"
+        )
+        return
 
     photo = update.message.photo[-1]  # type: ignore[union-attr]
     file = await photo.get_file()
-    caption = update.message.caption or ""  # type: ignore[union-attr]
+    caption = route.message_text
     suffix = ".jpg"
     if file.file_path:
         _, ext = os.path.splitext(file.file_path)
@@ -289,7 +304,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     try:
         await file.download_to_drive(custom_path=tmp_path)
-        reply = await agent_handle_image(tmp_path, caption, user_id, user_name, session)
+        reply = await agent_handle_image(tmp_path, caption, user_id, user_name, session, route.assistant_id)
         await update.message.reply_text(reply)  # type: ignore[union-attr]
     finally:
         try:

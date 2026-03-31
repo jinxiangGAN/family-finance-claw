@@ -20,7 +20,7 @@ from typing import Optional
 
 from zoneinfo import ZoneInfo
 
-from app.config import FAMILY_MEMBERS, TIMEZONE
+from app.config import DEFAULT_ASSISTANT_ID, FAMILY_MEMBERS, TIMEZONE
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class Session:
     chat_id: int
     chat_type: str  # "private" | "group" | "supergroup"
     display_name: str = ""
+    assistant_id: str = DEFAULT_ASSISTANT_ID
     interaction_count: int = 0
     last_active: str = ""
     _last_active_ts: float = field(default_factory=_time.time, repr=False)

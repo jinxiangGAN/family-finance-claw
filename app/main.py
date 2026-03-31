@@ -6,7 +6,16 @@ import shutil
 import subprocess
 import sys
 
-from app.config import BOT_BACKEND, CODEX_BIN, CODEX_HOME, CODEX_MODEL, CODEX_WORKDIR, DATABASE_PATH, TELEGRAM_BOT_TOKEN
+from app.config import (
+    BOT_BACKEND,
+    CODEX_BIN,
+    CODEX_HOME,
+    CODEX_MODEL,
+    CODEX_WORKDIR,
+    DATABASE_PATH,
+    DEFAULT_ASSISTANT_ID,
+    TELEGRAM_BOT_TOKEN,
+)
 from app.database import init_db
 from app.bot.handlers import build_application
 
@@ -30,6 +39,7 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Please check your .env file.")
         sys.exit(1)
     logger.info("Bot backend: %s", BOT_BACKEND)
+    logger.info("Default assistant: %s", DEFAULT_ASSISTANT_ID)
     logger.info("Codex binary: %s", CODEX_BIN)
     if CODEX_MODEL:
         logger.info("Codex model override: %s", CODEX_MODEL)

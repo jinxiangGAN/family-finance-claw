@@ -18,6 +18,9 @@ CODEX_HOME: str = os.getenv("CODEX_HOME", os.path.expanduser("~/.codex"))
 CODEX_TIMEOUT_SECONDS: int = int(os.getenv("CODEX_TIMEOUT_SECONDS", "180"))
 CODEX_WORKDIR: str = os.getenv("CODEX_WORKDIR", os.getcwd())
 PYTHON_BIN: str = os.getenv("PYTHON_BIN", sys.executable)
+DEFAULT_ASSISTANT_ID: str = os.getenv("DEFAULT_ASSISTANT_ID", "family-finance")
+DEFAULT_ASSISTANT_NAME: str = os.getenv("DEFAULT_ASSISTANT_NAME", "小灰毛")
+ASSISTANT_REGISTRY_PATH: str = os.getenv("ASSISTANT_REGISTRY_PATH", "")
 
 # Legacy LLM settings kept for backward-compatible imports in helper modules.
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "codex")
@@ -30,6 +33,7 @@ LLM_MONTHLY_TOKEN_LIMIT: int = int(os.getenv("LLM_MONTHLY_TOKEN_LIMIT", "0"))
 
 # Database
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/expenses.db")
+CODEX_SESSION_STORE_PATH: str = os.getenv("CODEX_SESSION_STORE_PATH", "data/codex_sessions.json")
 
 # Allowed Telegram user IDs (comma-separated)
 _allowed = os.getenv("ALLOWED_USER_IDS", "")
