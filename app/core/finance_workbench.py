@@ -127,6 +127,52 @@ def _parse_delete_by_id(text: str) -> dict[str, Any]:
     }
 
 
+def _render_record_expense(result: dict[str, Any]) -> str:
+    return str(result.get("confirmation") or result.get("message") or "已记录。")
+
+
+def _render_recent_expenses(result: dict[str, Any]) -> str:
+    items = result.get("items") or []
+    if not items:
+        return "最近没有找到相关账目。"
+    lines = [f"最近 {len(items)} 笔："]
+    for item in items[:10]:
+        lines.append(
+            f"#{item['id']} {item['user_name']} / {item['category']} {float(item['amount']):.2f} {item['currency']}"
+            f"{' / ' + item['note'] if item.get('note') else ''}"
+        )
+    return "\n".join(lines)
+
+
+def _render_month_total(result: dict[str, Any]) -> str:
+    label = result.get("label", "本月")
+    total = float(result.get("total", 0))
+    currency = result.get("currency", CURRENCY)
+    if result.get("includes_special"):
+        return f"{label}本月合计（含专项）是 {total:.2f} {currency}。"
+    return f"{label}本月合计是 {total:.2f} {currency}。"
+
+
+def _render_budget_query(result: dict[str, Any]) -> str:
+    budgets = result.get("budgets") or []
+    if not budgets:
+        return str(result.get("message") or "目前还没有设置预算。")
+    lines = ["当前预算："]
+    for item in budgets[:8]:
+        lines.append(
+            f"{item['category']} {float(item['spent']):.2f}/{float(item['monthly_limit']):.2f} {CURRENCY}"
+        )
+    return "\n".join(lines)
+
+
+def _render_budget_set(result: dict[str, Any]) -> str:
+    return str(result.get("message") or "预算已更新。")
+
+
+def _render_delete_by_id(result: dict[str, Any]) -> str:
+    return str(result.get("confirmation") or result.get("message") or "已删除。")
+
+
 _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "record_expense": ("record_expense", _parse_record_expense),
     "recent_expenses": ("query_recent_expenses", _parse_recent_expenses),
@@ -136,13 +182,33 @@ _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "delete_by_id": ("delete_expense_by_id", _parse_delete_by_id),
 }
 
+_WORKBENCH_RENDERERS: dict[str, Any] = {
+    "record_expense": _render_record_expense,
+    "recent_expenses": _render_recent_expenses,
+    "month_total": _render_month_total,
+    "budget_query": _render_budget_query,
+    "budget_set": _render_budget_set,
+    "delete_by_id": _render_delete_by_id,
+}
+
 
 def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -> dict[str, Any]:
     if action not in _WORKBENCH_ACTIONS:
         raise ValueError(f"Unsupported workbench action: {action}")
     skill_name, parser = _WORKBENCH_ACTIONS[action]
     params = parser(text)
-    return execute_skill(skill_name, user_id, user_name, params)
+    raw_result = execute_skill(skill_name, user_id, user_name, params)
+    renderer = _WORKBENCH_RENDERERS[action]
+    success = bool(raw_result.get("success", False))
+    reply = renderer(raw_result) if success else str(raw_result.get("message") or "这次操作失败了。")
+    return {
+        "success": success,
+        "action": action,
+        "skill_name": skill_name,
+        "params": params,
+        "reply": reply.strip(),
+        "payload": raw_result,
+    }
 
 
 def main() -> None:
