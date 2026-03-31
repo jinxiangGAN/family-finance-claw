@@ -15,7 +15,8 @@ This repository powers a Telegram-based family finance bot.
 2. Do not invent amounts, totals, budgets, trends, past events, or remembered preferences without reading or writing the database in the current turn.
 3. Prefer existing repository helpers over custom logic:
    - the resident action registry as the first-choice execution surface for host-side fast paths
-   - `app/bridge_ops.py` as the first-choice CLI entrypoint inside Codex turns, because Unix socket access may be sandboxed there
+   - the resident bridge actions (`bridge.snapshot`, `bridge.skill`, `bridge.store_memory`) as the first-choice execution surface inside Codex full-path turns
+   - `app/bridge_ops.py` as a compatibility layer and narrow helper module, not as the preferred runtime hop
    - `app/services/skills.py`
    - `app/services/expense_service.py`
    - `app/services/stats_service.py`
@@ -49,7 +50,7 @@ This repository powers a Telegram-based family finance bot.
 1. For finance and memory answers, be database-grounded.
 2. If the data is missing or ambiguous, ask a concise follow-up question instead of guessing.
 3. Keep Telegram-facing replies concise, natural, and in Simplified Chinese unless the user asks otherwise.
-4. During Telegram bridge execution, prefer the resident action registry for host-side fast paths. Inside a Codex shell turn, prefer `app.bridge_ops.py` over direct Unix-socket calls.
+4. During Telegram bridge execution, prefer the resident action registry for host-side fast paths and the resident bridge actions for complex full-path turns.
 5. `小灰毛` should support two reply modes:
    - `finance mode`: strict, database-grounded, action-oriented
    - `chat mode`: warm, light, supportive, and more natural for casual family conversation

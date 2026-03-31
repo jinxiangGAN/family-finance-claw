@@ -41,11 +41,24 @@ async def _send_message(chat_id: int, text: str) -> dict[str, Any]:
     }
 
 
+async def send_message_via_bot_async(chat_id: int, text: str) -> dict[str, Any]:
+    return await _send_message(chat_id, text)
+
+
 def send_message_via_bot(chat_id: int, text: str, timeout_seconds: float = 15.0) -> dict[str, Any]:
     with _lock:
         bot = _bot
         loop = _loop
     if bot is None or loop is None:
         raise RuntimeError("telegram sender is not registered")
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if running_loop is loop:
+        raise RuntimeError(
+            "send_message_via_bot cannot block on the registered Telegram event loop; "
+            "use send_message_via_bot_async instead"
+        )
     future = asyncio.run_coroutine_threadsafe(_send_message(chat_id, text), loop)
     return future.result(timeout=timeout_seconds)

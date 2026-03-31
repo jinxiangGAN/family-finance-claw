@@ -97,7 +97,7 @@ The next goal was reducing hallucination risk.
 
 The project moved toward:
 - bridge prompt constraints
-- `app.bridge_ops` as the preferred path
+- a narrow approved bridge path
 - database snapshot injection
 - stronger rules around finance and memory answers
 
@@ -237,6 +237,29 @@ Codex
 
 It also made runtime health more visible by exposing degraded/fallback state
 instead of silently getting slower when resident runtime had to back off.
+
+### Step 5.8: Move full-path finance turns onto a resident tool loop
+
+The next gap was that complex turns were still too shell-shaped:
+
+- simple finance was already resident
+- but complex query/budget/memory turns still pushed Codex toward extra process hops
+
+So the repo introduced a resident full-path tool loop:
+
+```text
+Codex
+-> resident bridge action request
+-> in-process bridge execution
+-> skill execution
+-> SQLite
+```
+
+That made the architecture more consistent with the product goal:
+
+- Telegram as a thin terminal
+- Codex as the thinking layer
+- resident process actions as the execution surface
 
 ### Step 6: Prepare for multi-assistant orchestration
 

@@ -20,7 +20,7 @@ from telegram.ext import (
 from zoneinfo import ZoneInfo
 
 from app.core.agent import agent_handle, agent_handle_image
-from app.core.action_registry import run_action
+from app.core.action_registry import run_action_async
 from app.config import (
     ALLOWED_USER_IDS,
     BOT_BACKEND,
@@ -181,7 +181,7 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_name = session.display_name
 
     scope = "family" if context.args and context.args[0] == "family" else "me"
-    result = run_action(
+    result = await run_action_async(
         "terminal.export_csv",
         user_id,
         user_name,
@@ -210,7 +210,7 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     user = update.effective_user  # type: ignore[union-attr]
     session = _get_session(update)
-    result = run_action(
+    result = await run_action_async(
         "terminal.runtime_status",
         user.id,
         session.display_name,
@@ -228,7 +228,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     user = update.effective_user  # type: ignore[union-attr]
     session = _get_session(update)
-    result = run_action(
+    result = await run_action_async(
         "terminal.reset_context",
         user.id,
         session.display_name,
@@ -248,7 +248,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     user_id = update.effective_user.id  # type: ignore[union-attr]
     session = _get_session(update)
-    result = run_action(
+    result = await run_action_async(
         "terminal.list_memories",
         user_id,
         session.display_name,

@@ -48,7 +48,11 @@ def _normalize_currency(raw: str | None) -> str:
     if not raw:
         return CURRENCY
     value = raw.strip().upper()
-    if value in {"元", "块", "人民币"}:
+    # In a Singapore-first household context, colloquial "元/块" should follow
+    # the default configured currency unless the user explicitly says RMB/CNY.
+    if value in {"元", "块"}:
+        return CURRENCY
+    if value == "人民币":
         return "CNY"
     return value
 

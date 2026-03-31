@@ -55,7 +55,7 @@ Instead:
 - Telegram receives the message
 - the repo builds a strict prompt
 - local Codex handles the turn
-- finance facts are expected to go through `app.bridge_ops`
+- finance facts are expected to go through the resident action surface
 
 This makes it easier to:
 - keep all business logic in the repo
@@ -69,7 +69,7 @@ For finance, budget, memory, and history questions, the intended path is:
 
 ```text
 Codex
--> app.bridge_ops
+-> resident bridge actions
 -> skill execution
 -> SQLite
 ```

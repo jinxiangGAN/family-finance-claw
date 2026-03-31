@@ -79,7 +79,7 @@ def main() -> None:
     logger.info("Starting Family Finance Claw 🦞 (Telegram -> Codex bridge)...")
     try:
         app = build_application()
-        app.run_polling(drop_pending_updates=True)
+        app.run_polling(drop_pending_updates=False)
     finally:
         DEFAULT_ACTION_REGISTRY_SERVER.stop()
 

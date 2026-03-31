@@ -7,6 +7,7 @@ simple finance/family turn.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,7 +23,10 @@ from app.config import ACTION_REGISTRY_SOCKET_PATH
 from app.bridge_ops import run_skill as run_bridge_skill
 from app.bridge_ops import snapshot as bridge_snapshot
 from app.bridge_ops import store_memory_entry
-from app.core.family_workbench import run_workbench_action as run_family_workbench_action
+from app.core.family_workbench import (
+    run_workbench_action as run_family_workbench_action,
+    run_workbench_action_async as run_family_workbench_action_async,
+)
 from app.core.finance_workbench import run_workbench_action as run_finance_workbench_action
 from app.core.observability import log_event, timed_event
 from app.core.terminal_workbench import run_workbench_action as run_terminal_workbench_action
@@ -43,6 +47,31 @@ _ACTION_MAP: dict[str, tuple[str, str]] = {
     "terminal.export_csv": ("terminal", "export_csv"),
     "terminal.reset_context": ("terminal", "reset_context"),
 }
+
+
+def run_bridge_snapshot_action(user_id: int) -> dict[str, Any]:
+    return bridge_snapshot(user_id)
+
+
+def run_bridge_skill_action(user_id: int, user_name: str, name: str, params: dict[str, Any]) -> dict[str, Any]:
+    return run_bridge_skill(user_id, user_name, name, params)
+
+
+def run_bridge_store_memory_action(
+    *,
+    user_id: int,
+    content: str,
+    category: str = "general",
+    importance: int = 5,
+    shared: bool = False,
+) -> dict[str, Any]:
+    return store_memory_entry(
+        user_id=user_id,
+        content=content,
+        category=category,
+        importance=importance,
+        shared=shared,
+    )
 
 
 def run_action(
@@ -68,6 +97,69 @@ def run_action(
         if namespace == "family":
             return run_family_workbench_action(workbench_action, user_id, user_name, text)
         return run_terminal_workbench_action(workbench_action, user_id, user_name, text, params=params)
+
+
+async def run_action_async(
+    action: str,
+    user_id: int,
+    user_name: str,
+    text: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target = _ACTION_MAP.get(action)
+    if target is None:
+        return {
+            "success": False,
+            "action": action,
+            "reply": f"当前还不支持动作 `{action}`。",
+            "payload": {"message": f"Unsupported action: {action}"},
+        }
+
+    namespace, workbench_action = target
+    with timed_event(logger, "action_registry.run_action_async", action=action, user_id=user_id):
+        if namespace == "family":
+            return await run_family_workbench_action_async(workbench_action, user_id, user_name, text)
+        return await asyncio.to_thread(run_action, action, user_id, user_name, text, params)
+
+
+async def run_bridge_snapshot_async(user_id: int) -> dict[str, Any]:
+    with timed_event(logger, "action_registry.run_bridge_snapshot_async", user_id=user_id):
+        return await asyncio.to_thread(run_bridge_snapshot_action, user_id)
+
+
+async def run_bridge_skill_async(
+    user_id: int,
+    user_name: str,
+    name: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    with timed_event(logger, "action_registry.run_bridge_skill_async", user_id=user_id, skill_name=name):
+        return await asyncio.to_thread(run_bridge_skill_action, user_id, user_name, name, params)
+
+
+async def run_bridge_store_memory_async(
+    *,
+    user_id: int,
+    content: str,
+    category: str = "general",
+    importance: int = 5,
+    shared: bool = False,
+) -> dict[str, Any]:
+    with timed_event(
+        logger,
+        "action_registry.run_bridge_store_memory_async",
+        user_id=user_id,
+        category=category,
+        shared=shared,
+    ):
+        return await asyncio.to_thread(
+            run_bridge_store_memory_action,
+            user_id=user_id,
+            content=content,
+            category=category,
+            importance=importance,
+            shared=shared,
+        )
 
 
 class _ThreadingUnixStreamHTTPServer(ThreadingMixIn, UnixStreamServer):
