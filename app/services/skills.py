@@ -27,6 +27,7 @@ from app.services.stats_service import (
     get_month_summary,
     get_month_total,
     get_monthly_archive,
+    get_monthly_report,
     get_spouse_id,
     resolve_user_ids,
 )
@@ -706,14 +707,19 @@ def skill_query_monthly_archive(user_id: int, user_name: str, params: dict) -> d
 
     grand_total = sum(r["total"] for r in rows)
     currency = rows[0]["currency"] if rows else CURRENCY
+    report = get_monthly_report(year, month, user_id=uid)
 
-    return {
+    result = {
         "success": True,
         "label": f"{label} {year}年{month}月",
         "summary": rows,
         "grand_total": round(grand_total, 2),
         "currency": currency,
     }
+    if report:
+        result["report_text"] = str(report.get("report_text") or "")
+        result["report_payload"] = report.get("report_payload") or {}
+    return result
 
 
 # ═══════════════════════════════════════════

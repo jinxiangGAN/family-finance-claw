@@ -138,6 +138,21 @@ CREATE_TABLES_SQL = [
         UNIQUE(year, month, user_id, category)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS monthly_reports (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        year          INTEGER NOT NULL,
+        month         INTEGER NOT NULL,
+        user_id       INTEGER NOT NULL,
+        total         REAL    NOT NULL DEFAULT 0,
+        currency      TEXT    NOT NULL DEFAULT 'SGD',
+        report_text   TEXT    NOT NULL DEFAULT '',
+        report_payload TEXT   NOT NULL DEFAULT '{}',
+        created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(year, month, user_id)
+    );
+    """,
 
     # Legacy flat memories table (kept for backward compat migration)
     """
@@ -182,6 +197,7 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_episodic_supersedes  ON episodic_memories(supersedes_memory_id);",
     "CREATE INDEX IF NOT EXISTS idx_core_profiles_user  ON core_profiles(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_monthly_summaries_ym ON monthly_summaries(year, month);",
+    "CREATE INDEX IF NOT EXISTS idx_monthly_reports_ym ON monthly_reports(year, month);",
 ]
 
 # Migrations (idempotent, errors silenced)

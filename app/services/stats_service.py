@@ -1,5 +1,6 @@
 """Service layer for expense statistics and queries."""
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -302,6 +303,65 @@ def get_monthly_archive(
         {"category": r["category"], "total": float(r["total"]), "currency": r["currency"]}
         for r in rows
     ]
+
+
+def upsert_monthly_report(
+    year: int,
+    month: int,
+    user_id: int,
+    total: float,
+    currency: str,
+    report_text: str,
+    report_payload: dict,
+) -> None:
+    payload_json = json.dumps(report_payload, ensure_ascii=False)
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO monthly_reports
+                (year, month, user_id, total, currency, report_text, report_payload, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(year, month, user_id) DO UPDATE SET
+                total = excluded.total,
+                currency = excluded.currency,
+                report_text = excluded.report_text,
+                report_payload = excluded.report_payload,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (year, month, user_id, total, currency, report_text, payload_json),
+        )
+        conn.commit()
+
+
+def get_monthly_report(
+    year: int,
+    month: int,
+    user_id: Optional[int] = None,
+) -> Optional[dict]:
+    uid = user_id if user_id is not None else 0
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT total, currency, report_text, report_payload, created_at, updated_at
+            FROM monthly_reports
+            WHERE year = ? AND month = ? AND user_id = ?
+            """,
+            (year, month, uid),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["report_payload"] or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "total": float(row["total"]),
+        "currency": row["currency"],
+        "report_text": row["report_text"],
+        "report_payload": payload,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def get_archived_months() -> list[dict]:

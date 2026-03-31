@@ -22,6 +22,7 @@ from app.services.stats_service import (
     get_category_total,
     get_last_n_days_summary,
     get_monthly_archive,
+    upsert_monthly_report,
     get_month_total,
     get_spouse_id,
 )
@@ -253,13 +254,33 @@ async def monthly_archive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         count = archive_month(year, month)
         logger.info("Monthly archive complete: %d rows for %04d-%02d", count, year, month)
 
+        family_payload = _build_family_monthly_report_payload(year, month, count)
+        upsert_monthly_report(
+            year=year,
+            month=month,
+            user_id=0,
+            total=float(family_payload["total"]),
+            currency=CURRENCY,
+            report_text=str(family_payload["report_text"]),
+            report_payload=family_payload,
+        )
+
         # Notify family members
         recipients = ALLOWED_USER_IDS if ALLOWED_USER_IDS else list(FAMILY_MEMBERS.keys())
         if recipients and count > 0:
             for uid in recipients:
                 try:
-                    msg = _build_monthly_report(uid, year, month, count)
-                    await context.bot.send_message(chat_id=uid, text=msg, parse_mode="Markdown")
+                    payload = _build_monthly_report_payload(uid, year, month, count)
+                    upsert_monthly_report(
+                        year=year,
+                        month=month,
+                        user_id=uid,
+                        total=float(payload["total"]),
+                        currency=CURRENCY,
+                        report_text=str(payload["report_text"]),
+                        report_payload=payload,
+                    )
+                    await context.bot.send_message(chat_id=uid, text=str(payload["report_text"]), parse_mode="Markdown")
                 except Exception:
                     logger.exception("Failed to send archive notification to %s", uid)
 
@@ -267,8 +288,8 @@ async def monthly_archive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Monthly archive job failed for %04d-%02d", year, month)
 
 
-def _build_monthly_report(user_id: int, year: int, month: int, archived_count: int) -> str:
-    """Build a real monthly summary from archived rows."""
+def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_count: int) -> dict:
+    """Build and persist-friendly monthly report payload for one person view."""
     name = FAMILY_MEMBERS.get(user_id, str(user_id))
     my_rows = get_monthly_archive(year, month, user_id=user_id)
     my_total = sum(r["total"] for r in my_rows)
@@ -303,7 +324,48 @@ def _build_monthly_report(user_id: int, year: int, month: int, archived_count: i
 
     lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
     lines.append("现在你可以直接问我：上个月花了多少、上个月餐饮花了多少。")
-    return "\n".join(lines)
+    return {
+        "scope": "personal_view",
+        "user_id": user_id,
+        "year": year,
+        "month": month,
+        "total": round(my_total, 2),
+        "currency": CURRENCY,
+        "my_summary": my_rows,
+        "spouse_summary": spouse_rows,
+        "family_summary": family_rows,
+        "memories": monthly_memories,
+        "report_text": "\n".join(lines),
+    }
+
+
+def _build_family_monthly_report_payload(year: int, month: int, archived_count: int) -> dict:
+    family_rows = get_monthly_archive(year, month, user_id=None)
+    family_total = sum(r["total"] for r in family_rows)
+    monthly_memories = _get_monthly_memories(0, year, month, limit=5)
+
+    lines = [f"📦 *{year}年{month}月家庭总结*\n"]
+    lines.append(f"👨‍👩‍👧 *家庭合计*：{family_total:.2f} {CURRENCY}")
+    for row in family_rows[:8]:
+        lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
+
+    if monthly_memories:
+        lines.append("\n🧠 *家庭相关提醒*")
+        for memory in monthly_memories[:3]:
+            lines.append(f"  💡 {memory['content']}")
+
+    lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
+    return {
+        "scope": "family",
+        "user_id": 0,
+        "year": year,
+        "month": month,
+        "total": round(family_total, 2),
+        "currency": CURRENCY,
+        "family_summary": family_rows,
+        "memories": monthly_memories,
+        "report_text": "\n".join(lines),
+    }
 
 
 def _get_monthly_memories(user_id: int, year: int, month: int, limit: int = 5) -> list[dict]:
