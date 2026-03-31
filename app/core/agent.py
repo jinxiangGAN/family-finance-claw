@@ -118,6 +118,16 @@ _FAST_WORKBENCH_INTENTS = {
     "forward_message",
 }
 
+_FAST_INTENT_ACTIONS: dict[str, str] = {
+    "record_expense": "finance.record_expense",
+    "recent_expenses": "finance.recent_expenses",
+    "month_total": "finance.month_total",
+    "budget_query": "finance.budget_query",
+    "budget_set": "finance.budget_set",
+    "delete_by_id": "finance.delete_by_id",
+    "forward_message": "family.forward_message",
+}
+
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
     key = (user_id, chat_id)
@@ -787,6 +797,8 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
 
     fast_intent = _detect_fast_finance_intent(text)
     if fast_intent in _FAST_WORKBENCH_INTENTS:
+        from app.core.action_registry import run_action
+
         log_event(
             logger,
             "agent.fast_path",
@@ -795,13 +807,17 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             chat_id=session.chat_id,
             intent=fast_intent,
         )
-        prompt = _build_fast_prompt(
-            text=text,
+        result = run_action(
+            _FAST_INTENT_ACTIONS[fast_intent],
             user_id=user_id,
             user_name=user_name,
-            session=session,
-            fast_intent=fast_intent,
+            text=text,
         )
+        reply = str(result.get("reply") or "").strip()
+        if reply:
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+        reply = "小灰毛这次没稳稳接住这个快捷动作，麻烦再发一次，我继续帮着看。"
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
     else:
         log_event(
             logger,
