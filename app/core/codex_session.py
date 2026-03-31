@@ -163,11 +163,9 @@ class CodexExecRuntime:
                 config.codex_bin,
                 "exec",
                 "resume",
-                state.persistent_session_id,
                 "--full-auto",
-                "--sandbox",
-                "workspace-write",
                 "--skip-git-repo-check",
+                state.persistent_session_id,
             ]
         else:
             args = [
@@ -180,16 +178,18 @@ class CodexExecRuntime:
                 config.workspace_path,
             ]
 
-        for writable_dir in config.all_writable_dirs:
-            args.extend(["--add-dir", writable_dir])
+        if not state.persistent_session_id:
+            for writable_dir in config.all_writable_dirs:
+                args.extend(["--add-dir", writable_dir])
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
         output_path = tmp.name
         tmp.close()
         args.extend(["--output-last-message", output_path])
-        args.extend(["--color", "never"])
+        if not state.persistent_session_id:
+            args.extend(["--color", "never"])
 
-        if config.codex_profile:
+        if config.codex_profile and not state.persistent_session_id:
             args.extend(["--profile", config.codex_profile])
         if config.codex_model:
             args.extend(["--model", config.codex_model])
