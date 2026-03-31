@@ -38,7 +38,13 @@ _MAX_HISTORY_TURNS = 6
 _MAX_DB_RECENT_EXPENSES = 5
 _MAX_DB_RECENT_MEMORIES = 5
 
-_RECORD_LIKE_RE = re.compile(r"^\s*\S.{0,40}\s+\d+(?:\.\d+)?(?:\s*[A-Za-z]{3}|元|块|人民币)?\s*$")
+_RECORD_LIKE_RE = re.compile(
+    r"^\s*(?P<note>.*?\D)\s*(?P<amount>\d+(?:\.\d+)?)(?:\s*(?P<currency>[A-Za-z]{3}|元|块|人民币))?\s*$"
+)
+_RECORD_PREFIX_RE = re.compile(r"^\s*(?:记一笔|记账|入账|记下|记一下)\s*[，,:：]?\s*")
+_RECORD_OWNER_SUFFIX_RE = re.compile(
+    r"\s*[，,]?\s*(?:我花的|我付的|我出的|是我花的|小鸡毛花的|小鸡毛付的|小鸡毛出的|小白花的|小白付的|小白出的)\s*$"
+)
 _MEMORY_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
     (re.compile(r"(目标|计划|打算|争取|要存|想存|少花|省钱|控制预算|减少开销)"), "goal", 7),
     (re.compile(r"(喜欢|不喜欢|偏好|习惯|通常|尽量|以后|不再|少坐|少点外卖|多做饭)"), "preference", 6),
@@ -198,6 +204,21 @@ def _thread_owner_id(user_id: int, session: Session) -> int:
     return 0 if session.is_group else user_id
 
 
+def _normalize_record_like_text(text: str) -> str:
+    stripped = _RECORD_PREFIX_RE.sub("", text.strip())
+    stripped = _RECORD_OWNER_SUFFIX_RE.sub("", stripped)
+    return stripped.strip()
+
+
+def _looks_like_record_expense(text: str) -> bool:
+    normalized = _normalize_record_like_text(text)
+    if not normalized:
+        return False
+    if "?" in normalized or "？" in normalized:
+        return False
+    return bool(_RECORD_LIKE_RE.match(normalized))
+
+
 def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
     """Public helper to clear short-term bridge context for one chat."""
     owner_id = 0 if is_group else user_id
@@ -266,7 +287,7 @@ def _build_prompt_context(
     chat_mode = _detect_chat_mode(text, image_path=image_path)
     history_items = _get_recent_history(thread_owner_id, session.chat_id)
 
-    if image_path or _RECORD_LIKE_RE.match(text.strip()):
+    if image_path or _looks_like_record_expense(text):
         history = "None"
         db_snapshot = "Omitted for fast expense handling. Use the resident action registry for any facts you need."
         return chat_mode, history, db_snapshot
@@ -336,7 +357,7 @@ def _detect_chat_mode(text: str, image_path: Optional[str] = None) -> str:
         return "finance"
     if not stripped:
         return "chat"
-    if _RECORD_LIKE_RE.match(stripped):
+    if _looks_like_record_expense(stripped):
         return "finance"
     if any(token in stripped for token in _FINANCE_HINT_TOKENS):
         return "finance"
@@ -413,7 +434,7 @@ def _looks_like_memory_candidate(text: str) -> bool:
         return False
     if "?" in stripped or "？" in stripped:
         return False
-    if _RECORD_LIKE_RE.match(stripped):
+    if _looks_like_record_expense(stripped):
         return False
     if _looks_like_query(stripped):
         return False
@@ -592,7 +613,7 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return None
     if any(pattern.match(stripped) for pattern in _FORWARD_MESSAGE_PATTERNS):
         return "forward_message"
-    if _RECORD_LIKE_RE.match(stripped):
+    if _looks_like_record_expense(stripped):
         return "record_expense"
     if _DELETE_BY_ID_RE.match(stripped):
         return "delete_by_id"
@@ -668,6 +689,7 @@ Rules:
 2. Do not modify repo source code, do not write ad-hoc SQL, and do not use random execution entrypoints.
 3. Output only the final Telegram reply in Simplified Chinese.
 4. If details are unclear for safe finance handling, ask one concise follow-up question.
+4a. For a simple expense record, if the user does not explicitly name a different owner, default the expense owner to the current sender. Do not ask them to restate "我花的" just to confirm the owner.
 5. In group chat, answer from a family perspective and avoid oversharing personal detail.
 6. In private chat, you may sound warmer and more personal.
 7. If the user is only chatting, reply naturally and briefly. Do not invent finance facts.
@@ -810,6 +832,7 @@ Rules:
 8. Final replies must be in Simplified Chinese only.
 9. Keep the final reply short, warm, and grounded. Prefer `小鸡毛` / `小白` when it sounds natural.
 10. If details are ambiguous for a safe write, ask one concise clarification question inside `<FINAL>`.
+10a. For a simple expense record, if no different owner is explicitly named, default the owner to the current sender instead of asking them to restate that it was their spending.
 11. This is resident full-path step {step_index + 1} of {_MAX_FULL_PATH_ACTION_STEPS}. Avoid unnecessary loops.
 
 Environment:

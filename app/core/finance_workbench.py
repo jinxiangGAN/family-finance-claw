@@ -24,7 +24,11 @@ logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)")
 _RECORD_RE = re.compile(
-    r"^\s*(?P<note>.+?)\s+(?P<amount>\d+(?:\.\d+)?)\s*(?P<currency>[A-Za-z]{3}|元|块|人民币)?\s*$"
+    r"^\s*(?P<note>.+?)\s*(?P<amount>\d+(?:\.\d+)?)\s*(?P<currency>[A-Za-z]{3}|元|块|人民币)?\s*$"
+)
+_RECORD_PREFIX_RE = re.compile(r"^\s*(?:记一笔|记账|入账|记下|记一下)\s*[，,:：]?\s*")
+_RECORD_OWNER_SUFFIX_RE = re.compile(
+    r"\s*[，,]?\s*(?:我花的|我付的|我出的|是我花的|小鸡毛花的|小鸡毛付的|小鸡毛出的|小白花的|小白付的|小白出的)\s*$"
 )
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(?P<expense_id>\d+)\s*$")
 _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\s*笔")
@@ -87,8 +91,14 @@ def _infer_include_special(text: str) -> bool:
     return any(token in text for token in ("专项", "旅行", "计划", "全部"))
 
 
+def _normalize_record_text(text: str) -> str:
+    stripped = _RECORD_PREFIX_RE.sub("", text.strip())
+    stripped = _RECORD_OWNER_SUFFIX_RE.sub("", stripped)
+    return stripped.strip()
+
+
 def _parse_record_expense(text: str) -> dict[str, Any]:
-    match = _RECORD_RE.match(text)
+    match = _RECORD_RE.match(_normalize_record_text(text))
     if not match:
         raise ValueError("Could not parse a simple expense from this message.")
     note = match.group("note").strip()
