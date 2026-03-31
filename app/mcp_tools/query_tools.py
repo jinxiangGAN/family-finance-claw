@@ -5,17 +5,46 @@ from app.services.skills import (
     skill_query_category_items,
     skill_query_recent_expenses,
     skill_get_spending_analysis,
+    skill_query_balance_status,
     skill_query_budget,
     skill_query_budget_changes,
     skill_query_category_total,
     skill_query_exchange_rate,
+    skill_query_goal_progress,
     skill_query_monthly_archive,
     skill_query_monthly_total,
+    skill_query_period_comparison,
+    skill_query_recurring_status,
+    skill_query_spending_anomalies,
     skill_query_summary,
     skill_set_budget,
 )
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "query_recurring_status",
+            "description": "Query this month's recurring bill status to see what has already been logged and what is still missing.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_period_comparison",
+            "description": "Compare this month against last month for total spending or a specific category.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
+                    "category": {"type": "string", "description": "Optional category filter", "enum": ["", *CATEGORIES]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -115,6 +144,42 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_balance_status",
+            "description": "Query who owes whom right now, optionally for a specific event/trip tag.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_tag": {"type": "string", "description": "Optional event/trip tag"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_spending_anomalies",
+            "description": "Detect current-month spending anomalies compared with the trailing three months.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "Query scope", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "Whether to include special/event expenses. Default false."},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_goal_progress",
+            "description": "Query progress against monthly spending goals.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "query_budget",
             "description": "查询家庭预算使用情况。预算是全家共享的，支出按全家合计。",
             "parameters": {"type": "object", "properties": {}},
@@ -187,7 +252,12 @@ HANDLERS = {
     "query_category_total": skill_query_category_total,
     "query_category_items": skill_query_category_items,
     "query_recent_expenses": skill_query_recent_expenses,
+    "query_recurring_status": skill_query_recurring_status,
+    "query_period_comparison": skill_query_period_comparison,
     "query_summary": skill_query_summary,
+    "query_balance_status": skill_query_balance_status,
+    "query_spending_anomalies": skill_query_spending_anomalies,
+    "query_goal_progress": skill_query_goal_progress,
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
     "query_budget_changes": skill_query_budget_changes,

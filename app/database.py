@@ -164,6 +164,52 @@ CREATE_TABLES_SQL = [
         PRIMARY KEY (base_currency, quote_currency)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS recurring_rules (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL,
+        name          TEXT    NOT NULL,
+        category      TEXT    NOT NULL DEFAULT '其他',
+        amount        REAL    NOT NULL,
+        currency      TEXT    NOT NULL DEFAULT 'SGD',
+        due_day       INTEGER NOT NULL DEFAULT 1,
+        match_text    TEXT    NOT NULL DEFAULT '',
+        note          TEXT    NOT NULL DEFAULT '',
+        is_active     INTEGER NOT NULL DEFAULT 1,
+        created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, name)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS settlement_records (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_user_id  INTEGER NOT NULL,
+        to_user_id    INTEGER NOT NULL,
+        amount        REAL    NOT NULL,
+        currency      TEXT    NOT NULL DEFAULT 'SGD',
+        amount_sgd    REAL    NOT NULL DEFAULT 0,
+        note          TEXT    NOT NULL DEFAULT '',
+        event_tag     TEXT    NOT NULL DEFAULT '',
+        created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS spending_goals (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id         INTEGER NOT NULL,
+        category        TEXT    NOT NULL DEFAULT '_total',
+        target_amount   REAL    NOT NULL,
+        currency        TEXT    NOT NULL DEFAULT 'SGD',
+        period          TEXT    NOT NULL DEFAULT 'monthly',
+        include_special INTEGER NOT NULL DEFAULT 0,
+        note            TEXT    NOT NULL DEFAULT '',
+        is_active       INTEGER NOT NULL DEFAULT 1,
+        created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, category, period)
+    );
+    """,
 
     # Legacy flat memories table (kept for backward compat migration)
     """
@@ -210,6 +256,11 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_monthly_summaries_ym ON monthly_summaries(year, month);",
     "CREATE INDEX IF NOT EXISTS idx_monthly_reports_ym ON monthly_reports(year, month);",
     "CREATE INDEX IF NOT EXISTS idx_fx_rates_fetched_at ON fx_rates(fetched_at);",
+    "CREATE INDEX IF NOT EXISTS idx_recurring_rules_user_id ON recurring_rules(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_recurring_rules_due_day ON recurring_rules(due_day);",
+    "CREATE INDEX IF NOT EXISTS idx_settlement_records_created_at ON settlement_records(created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_settlement_records_event_tag ON settlement_records(event_tag);",
+    "CREATE INDEX IF NOT EXISTS idx_spending_goals_user_id ON spending_goals(user_id);",
 ]
 
 # Migrations (idempotent, errors silenced)

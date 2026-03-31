@@ -22,6 +22,16 @@ from app.services.expense_service import (
     save_expense,
 )
 from app.services.fx_service import convert_amount, fx_source_label, get_exchange_rate
+from app.services.household_service import (
+    get_balance_status,
+    get_goal_progress,
+    get_period_comparison,
+    get_recurring_status,
+    get_spending_anomalies,
+    record_settlement,
+    upsert_recurring_rule,
+    upsert_spending_goal,
+)
 from app.services.stats_service import (
     get_category_total,
     get_member_name,
@@ -527,6 +537,198 @@ def skill_query_exchange_rate(user_id: int, user_name: str, params: dict) -> dic
     }
 
 
+def skill_set_recurring_rule(user_id: int, user_name: str, params: dict) -> dict:
+    """Create or update a recurring bill rule."""
+    name = str(params.get("name") or "").strip()
+    category = str(params.get("category") or "其他").strip() or "其他"
+    amount = float(params.get("amount", 0))
+    due_day = int(params.get("due_day", 1))
+    currency = str(params.get("currency") or CURRENCY).strip() or CURRENCY
+    note = str(params.get("note") or "").strip()
+    match_text = str(params.get("match_text") or "").strip()
+    shared = bool(params.get("shared", True))
+    if not name:
+        return {"success": False, "message": "请先告诉我要记录哪个固定账单。"}
+    if amount <= 0:
+        return {"success": False, "message": "固定账单金额必须大于 0。"}
+    if category not in CATEGORIES:
+        category = "其他"
+    result = upsert_recurring_rule(
+        request_user_id=user_id,
+        name=name,
+        category=category,
+        amount=amount,
+        currency=currency,
+        due_day=due_day,
+        match_text=match_text,
+        note=note,
+        shared=shared,
+    )
+    scope_label = "家庭共享" if result["scope"] == "family" else "个人"
+    return {
+        "success": True,
+        **result,
+        "message": (
+            f"已设置{scope_label}固定账单：{name} / {category} "
+            f"{amount:.2f} {result['currency']} / 每月 {due_day} 号"
+        ),
+    }
+
+
+def skill_query_recurring_status(user_id: int, user_name: str, params: dict) -> dict:
+    """Query recurring bill status for this month."""
+    result = get_recurring_status(user_id)
+    items = result.get("items") or []
+    if not items:
+        return {"success": True, **result, "message": "目前还没有设置固定账单。"}
+    overdue_count = sum(1 for item in items if item["status"] == "overdue")
+    return {
+        "success": True,
+        **result,
+        "message": f"本月固定账单共 {len(items)} 项，其中待补记 {overdue_count} 项。",
+    }
+
+
+def skill_query_period_comparison(user_id: int, user_name: str, params: dict) -> dict:
+    """Compare current month vs previous month."""
+    scope = str(params.get("scope") or "me")
+    category = str(params.get("category") or "").strip()
+    include_special = bool(params.get("include_special", False))
+    if scope == "spouse" and get_spouse_id(user_id) is None:
+        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
+    result = get_period_comparison(
+        request_user_id=user_id,
+        scope=scope,
+        category=category,
+        include_special=include_special,
+    )
+    label = _scope_label(scope, user_id)
+    message = (
+        f"{label}{'的' + category if category else ''}本月相比上月"
+        f"{'增加' if result['delta'] >= 0 else '减少'}了 {abs(float(result['delta'])):.2f} {CURRENCY}。"
+    )
+    return {"success": True, **result, "label": label, "message": message}
+
+
+def skill_record_settlement(user_id: int, user_name: str, params: dict) -> dict:
+    """Record a settlement transfer between family members."""
+    from_user_id = int(params.get("from_user_id", 0))
+    to_user_id = int(params.get("to_user_id", 0))
+    amount = float(params.get("amount", 0))
+    currency = str(params.get("currency") or CURRENCY)
+    note = str(params.get("note") or "").strip()
+    event_tag = str(params.get("event_tag") or "").strip()
+    if from_user_id <= 0 or to_user_id <= 0 or from_user_id == to_user_id:
+        return {"success": False, "message": "请提供有效的结算双方。"}
+    if amount <= 0:
+        return {"success": False, "message": "结算金额必须大于 0。"}
+    result = record_settlement(
+        from_user_id=from_user_id,
+        to_user_id=to_user_id,
+        amount=amount,
+        currency=currency,
+        note=note,
+        event_tag=event_tag,
+    )
+    if not result.get("success"):
+        return result
+    return {
+        "success": True,
+        **result,
+        "message": (
+            f"已记录结算：{get_member_name(from_user_id)} -> {get_member_name(to_user_id)} "
+            f"{amount:.2f} {result['currency']}"
+        ),
+    }
+
+
+def skill_query_balance_status(user_id: int, user_name: str, params: dict) -> dict:
+    """Query AA / who owes whom status."""
+    event_tag = str(params.get("event_tag") or "").strip()
+    result = get_balance_status(user_id, event_tag=event_tag)
+    if not result.get("success"):
+        return result
+    suggestions = result.get("suggested_transfers") or []
+    if suggestions:
+        first = suggestions[0]
+        message = (
+            f"目前最直接的结算建议是：{first['from_user_name']} 给 {first['to_user_name']} "
+            f"{float(first['amount']):.2f} {CURRENCY}。"
+        )
+    else:
+        message = "目前已经基本结平了。"
+    return {"success": True, **result, "message": message}
+
+
+def skill_query_spending_anomalies(user_id: int, user_name: str, params: dict) -> dict:
+    """Query abnormal spending spikes for the current month."""
+    scope = str(params.get("scope") or "me")
+    include_special = bool(params.get("include_special", False))
+    if scope == "spouse" and get_spouse_id(user_id) is None:
+        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
+    result = get_spending_anomalies(
+        request_user_id=user_id,
+        scope=scope,
+        include_special=include_special,
+    )
+    anomalies = result.get("anomalies") or []
+    label = _scope_label(scope, user_id)
+    if not anomalies:
+        return {"success": True, **result, "label": label, "message": f"{label}这个月目前还没看到明显异常开销。"}
+    first = anomalies[0]
+    return {
+        "success": True,
+        **result,
+        "label": label,
+        "message": (
+            f"{label}这个月有一点异常波动：{first['label']}比过去 3 个月均值多了 "
+            f"{float(first['delta']):.2f} {CURRENCY}。"
+        ),
+    }
+
+
+def skill_set_spending_goal(user_id: int, user_name: str, params: dict) -> dict:
+    """Set or update a monthly spending goal."""
+    category = str(params.get("category") or "_total").strip() or "_total"
+    target_amount = float(params.get("target_amount", 0))
+    shared = bool(params.get("shared", False))
+    note = str(params.get("note") or "").strip()
+    include_special = bool(params.get("include_special", False))
+    if target_amount <= 0:
+        return {"success": False, "message": "目标金额必须大于 0。"}
+    if category != "_total" and category not in CATEGORIES:
+        category = "其他"
+    result = upsert_spending_goal(
+        request_user_id=user_id,
+        category=category,
+        target_amount=target_amount,
+        note=note,
+        shared=shared,
+        include_special=include_special,
+    )
+    scope_label = "家庭" if result["scope"] == "family" else "个人"
+    category_label = "总支出" if category == "_total" else category
+    return {
+        "success": True,
+        **result,
+        "message": f"已设置{scope_label}月目标：{category_label}控制在 {target_amount:.2f} {CURRENCY} 以内。",
+    }
+
+
+def skill_query_goal_progress(user_id: int, user_name: str, params: dict) -> dict:
+    """Query current monthly goal progress."""
+    result = get_goal_progress(user_id)
+    items = result.get("items") or []
+    if not items:
+        return {"success": True, **result, "message": "目前还没有设置结构化月目标。"}
+    on_track_count = sum(1 for item in items if item["on_track"])
+    return {
+        "success": True,
+        **result,
+        "message": f"当前共有 {len(items)} 个目标，其中 {on_track_count} 个还在轨道上。",
+    }
+
+
 def skill_get_spending_analysis(user_id: int, user_name: str, params: dict) -> dict:
     """Get raw spending data for LLM analysis."""
     scope = params.get("scope", "me")
@@ -752,6 +954,14 @@ SKILL_MAP: dict[str, Any] = {
     "query_budget": skill_query_budget,
     "query_budget_changes": skill_query_budget_changes,
     "query_exchange_rate": skill_query_exchange_rate,
+    "set_recurring_rule": skill_set_recurring_rule,
+    "query_recurring_status": skill_query_recurring_status,
+    "query_period_comparison": skill_query_period_comparison,
+    "record_settlement": skill_record_settlement,
+    "query_balance_status": skill_query_balance_status,
+    "query_spending_anomalies": skill_query_spending_anomalies,
+    "set_spending_goal": skill_set_spending_goal,
+    "query_goal_progress": skill_query_goal_progress,
     "get_spending_analysis": skill_get_spending_analysis,
     "start_event": skill_start_event,
     "stop_event": skill_stop_event,
@@ -930,6 +1140,124 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "required": ["base_currency"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_recurring_rule",
+            "description": "设置或更新固定账单，例如房租、会员、网费。可设置为家庭共享或个人固定账单。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "固定账单名称，例如 房租、Netflix"},
+                    "category": {"type": "string", "description": "支出分类", "enum": CATEGORIES},
+                    "amount": {"type": "number", "description": "每次固定账单金额"},
+                    "currency": {"type": "string", "description": f"货币代码，默认 {CURRENCY}"},
+                    "due_day": {"type": "integer", "description": "每月应记账日期，例如 1、15、28"},
+                    "match_text": {"type": "string", "description": "可选：备注里用于识别已记账的关键词"},
+                    "note": {"type": "string", "description": "可选备注"},
+                    "shared": {"type": "boolean", "description": "是否设为家庭共享固定账单"},
+                },
+                "required": ["name", "category", "amount", "due_day"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_recurring_status",
+            "description": "查询本月固定账单的完成情况，看看哪些已经记过、哪些还没记。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_period_comparison",
+            "description": "对比本月和上个月的开销变化，可以查总额或某个分类。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                    "category": {"type": "string", "description": "可选：只对比某个分类", "enum": ["", *CATEGORIES]},
+                    "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "record_settlement",
+            "description": "记录一次 AA/垫付后的结算转账，例如小白给小鸡毛转了 50。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from_user_id": {"type": "integer", "description": "付款方 user_id"},
+                    "to_user_id": {"type": "integer", "description": "收款方 user_id"},
+                    "amount": {"type": "number", "description": "结算金额"},
+                    "currency": {"type": "string", "description": f"货币代码，默认 {CURRENCY}"},
+                    "note": {"type": "string", "description": "可选备注"},
+                    "event_tag": {"type": "string", "description": "可选：只归属某个专项/旅行"},
+                },
+                "required": ["from_user_id", "to_user_id", "amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_balance_status",
+            "description": "查询目前谁欠谁、谁垫付得更多。可用于家庭日常或某个专项/旅行。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_tag": {"type": "string", "description": "可选：只看某个专项/旅行的 AA 余额"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_spending_anomalies",
+            "description": "检测本月相比过去三个月的异常开销波动。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_spending_goal",
+            "description": "设置月度开销目标，比如餐饮控制在 500 或总支出控制在 3000。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "目标分类，'_total' 表示总支出目标", "enum": ["_total", *CATEGORIES]},
+                    "target_amount": {"type": "number", "description": "目标金额上限"},
+                    "shared": {"type": "boolean", "description": "是否设为家庭共享目标"},
+                    "include_special": {"type": "boolean", "description": "是否把专项开销也算进目标"},
+                    "note": {"type": "string", "description": "可选备注"},
+                },
+                "required": ["category", "target_amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_goal_progress",
+            "description": "查询本月目标进度，看看哪些目标还在轨道上。",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {

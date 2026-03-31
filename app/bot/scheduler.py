@@ -26,6 +26,7 @@ from app.services.stats_service import (
     get_month_total,
     get_spouse_id,
 )
+from app.services.household_service import get_goal_progress, get_recurring_status, get_spending_anomalies
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,20 @@ def _build_weekly_report(user_id: int) -> str:
         for m in memories:
             if m["category"] in ("goal", "decision"):
                 lines.append(f"  💡 {m['content']}")
+
+    anomalies = get_spending_anomalies(request_user_id=user_id, scope="me")
+    if anomalies.get("anomalies"):
+        first = anomalies["anomalies"][0]
+        lines.append(f"\n⚠️ *异常波动*：{first['label']} 比最近 3 个月均值多了 {float(first['delta']):.0f} {CURRENCY}")
+
+    goals = get_goal_progress(user_id)
+    goal_items = goals.get("items") or []
+    if goal_items:
+        first_goal = goal_items[0]
+        goal_label = "总支出" if first_goal["category"] == "_total" else first_goal["category"]
+        lines.append(
+            f"\n🎯 *目标进度*：{goal_label} {float(first_goal['spent']):.0f}/{float(first_goal['target_amount']):.0f} {CURRENCY}"
+        )
 
     lines.append("\n💡 回复消息即可继续记账！")
     return "\n".join(lines)
@@ -227,6 +242,16 @@ def _build_proactive_nudge(user_id: int) -> str:
     if goal_memories:
         lines.append(f"\n🧠 提醒：{goal_memories[0]['content']}")
 
+    recurring = get_recurring_status(user_id)
+    overdue = [item for item in (recurring.get("items") or []) if item.get("status") == "overdue"]
+    if overdue:
+        lines.append(f"\n🧾 还有 {len(overdue)} 个固定账单这月还没记，可以顺手补一下。")
+
+    anomalies = get_spending_anomalies(request_user_id=user_id, scope="me")
+    if anomalies.get("anomalies"):
+        first = anomalies["anomalies"][0]
+        lines.append(f"\n⚠️ 最近 {first['label']} 有点冲，高于过去均值。")
+
     return "\n".join(lines)
 
 
@@ -317,10 +342,21 @@ def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_
         lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
 
     monthly_memories = _get_monthly_memories(user_id, year, month, limit=5)
+    goals = get_goal_progress(user_id, year=year, month=month)
+    goal_items = goals.get("items") or []
     if monthly_memories:
         lines.append("\n🧠 *相关提醒*")
         for memory in monthly_memories[:2]:
             lines.append(f"  💡 {memory['content']}")
+
+    if goal_items:
+        lines.append("\n🎯 *本月目标状态*")
+        for item in goal_items[:3]:
+            goal_label = "总支出" if item["category"] == "_total" else item["category"]
+            status = "🟢" if item["on_track"] else "🟡"
+            lines.append(
+                f"  {status} {goal_label}：{float(item['spent']):.2f}/{float(item['target_amount']):.2f} {CURRENCY}"
+            )
 
     lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
     lines.append("现在你可以直接问我：上个月花了多少、上个月餐饮花了多少。")
@@ -335,6 +371,7 @@ def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_
         "spouse_summary": spouse_rows,
         "family_summary": family_rows,
         "memories": monthly_memories,
+        "goals": goal_items,
         "report_text": "\n".join(lines),
     }
 
@@ -343,6 +380,8 @@ def _build_family_monthly_report_payload(year: int, month: int, archived_count: 
     family_rows = get_monthly_archive(year, month, user_id=None)
     family_total = sum(r["total"] for r in family_rows)
     monthly_memories = _get_monthly_memories(0, year, month, limit=5)
+    goals = get_goal_progress(0, year=year, month=month)
+    family_goals = [item for item in (goals.get("items") or []) if item.get("scope") == "family"]
 
     lines = [f"📦 *{year}年{month}月家庭总结*\n"]
     lines.append(f"👨‍👩‍👧 *家庭合计*：{family_total:.2f} {CURRENCY}")
@@ -354,6 +393,15 @@ def _build_family_monthly_report_payload(year: int, month: int, archived_count: 
         for memory in monthly_memories[:3]:
             lines.append(f"  💡 {memory['content']}")
 
+    if family_goals:
+        lines.append("\n🎯 *家庭目标状态*")
+        for item in family_goals[:3]:
+            goal_label = "总支出" if item["category"] == "_total" else item["category"]
+            status = "🟢" if item["on_track"] else "🟡"
+            lines.append(
+                f"  {status} {goal_label}：{float(item['spent']):.2f}/{float(item['target_amount']):.2f} {CURRENCY}"
+            )
+
     lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
     return {
         "scope": "family",
@@ -364,6 +412,7 @@ def _build_family_monthly_report_payload(year: int, month: int, archived_count: 
         "currency": CURRENCY,
         "family_summary": family_rows,
         "memories": monthly_memories,
+        "goals": family_goals,
         "report_text": "\n".join(lines),
     }
 

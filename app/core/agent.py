@@ -52,6 +52,17 @@ _FINANCE_HINT_TOKENS = (
     "预算",
     "记账",
     "报销",
+    "固定账单",
+    "每月",
+    "对比",
+    "上个月",
+    "异常",
+    "欠谁",
+    "AA",
+    "垫付",
+    "结算",
+    "目标",
+    "进度",
     "房租",
     "机票",
     "签证",
@@ -778,6 +789,12 @@ You have exactly two output modes and must choose one:
 <ACTION>{{"kind":"bridge.snapshot"}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"set_recurring_rule","params":{{"name":"房租","category":"房租","amount":4500,"due_day":1,"shared":true}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_comparison","params":{{"scope":"family"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_balance_status","params":{{"event_tag":"日本旅行"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_spending_anomalies","params":{{"scope":"me"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"set_spending_goal","params":{{"category":"餐饮","target_amount":500}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_goal_progress","params":{{}}}}</ACTION>
 <ACTION>{{"kind":"bridge.store_memory","content":"Reduce takeout spending on weekdays.","category":"goal","importance":7,"shared":false}}</ACTION>
 2. A final Telegram reply:
 <FINAL>...</FINAL>
@@ -787,7 +804,7 @@ Rules:
 2. For finance and memory facts, use resident actions instead of guessing.
 3. Use one resident action at a time. After receiving an action result, either issue the next action or finish.
 4. Use `bridge.snapshot` when you need recent expenses, recent memories, or profile context from the database.
-5. Use `bridge.skill` for finance/business actions such as query, budget, event, summary, and expense operations.
+5. Use `bridge.skill` for finance/business actions such as query, budget, event, summary, recurring bills, balances, anomalies, goals, and expense operations.
 6. Use `bridge.store_memory` only after the user has already confirmed the memory should be saved. Memory content must be concise English.
 7. If the user is only chatting, you may reply directly with `<FINAL>` and no action.
 8. Final replies must be in Simplified Chinese only.
