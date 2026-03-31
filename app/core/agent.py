@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_HISTORY: dict[tuple[int, int], list[dict[str, str]]] = {}
 _PENDING_MEMORY: dict[tuple[int, int], dict[str, object]] = {}
+_PENDING_ACTION: dict[tuple[int, int], dict[str, str]] = {}
 _MAX_HISTORY_TURNS = 6
 _MAX_DB_RECENT_EXPENSES = 5
 _MAX_DB_RECENT_MEMORIES = 5
@@ -76,6 +77,22 @@ _FINANCE_HINT_TOKENS = (
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
 _ARCHIVE_MEMORY_RE = re.compile(r"^\s*(?:忘掉|忘记|归档)\s*(?:记忆)?\s*#?(\d+)\s*$")
 _UPDATE_MEMORY_RE = re.compile(r"^\s*(?:把)?记忆\s*#?(\d+)\s*(?:改成|更新成|修改为|替换为)\s*(.+?)\s*$")
+_WRITE_ACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?:^|\s)(?:删除|删掉|撤销)(?:最近一笔|上一笔|#?\d+|这笔|那笔)?"), "delete an expense record"),
+    (re.compile(r"(?:预算.*(?:设为|改成|改为|调整为))"), "update a budget"),
+    (re.compile(r"(?:开始|创建|开启).*(?:旅行|计划|专项|事件)"), "create or activate a special plan"),
+    (re.compile(r"(?:结束|关闭).*(?:旅行|计划|专项|事件)"), "close a special plan"),
+]
+_ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
+    "record an expense": ("record_expense", "create a new expense record in the database"),
+    "record an expense from an image": ("record_expense", "extract receipt details and create a new expense record"),
+    "delete an expense record": ("delete_last_expense / delete_expense_by_id", "remove or roll back an existing expense record"),
+    "update a budget": ("set_budget", "create or update a monthly family budget"),
+    "create or activate a special plan": ("start_event", "create or activate a special event/project plan"),
+    "close a special plan": ("stop_event", "close the current special event/project plan"),
+    "archive a memory": ("forget_memory", "archive an old memory so it no longer participates as active memory"),
+    "update a memory": ("update_memory", "archive the old memory and create a new replacement version"),
+}
 
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
@@ -93,6 +110,12 @@ def _get_recent_history(user_id: int, chat_id: int) -> list[dict[str, str]]:
 def _reset_session_history(user_id: int, chat_id: int) -> None:
     _SESSION_HISTORY.pop((user_id, chat_id), None)
     _PENDING_MEMORY.pop((user_id, chat_id), None)
+    _PENDING_ACTION.pop((user_id, chat_id), None)
+
+
+def reset_agent_context(user_id: int, chat_id: int) -> None:
+    """Public helper to clear short-term bridge context for one chat."""
+    _reset_session_history(user_id, chat_id)
 
 
 def _format_history(history: list[dict[str, str]]) -> str:
@@ -181,6 +204,20 @@ def _detect_chat_mode(text: str, image_path: Optional[str] = None) -> str:
     if re.search(r"\d+(?:\.\d+)?", stripped):
         return "finance"
     return "chat"
+
+
+def _detect_write_action(text: str, image_path: Optional[str] = None) -> Optional[str]:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if _ARCHIVE_MEMORY_RE.match(stripped):
+        return "archive a memory"
+    if _UPDATE_MEMORY_RE.match(stripped):
+        return "update a memory"
+    for pattern, label in _WRITE_ACTION_PATTERNS:
+        if pattern.search(stripped):
+            return label
+    return None
 
 
 def _looks_like_memory_candidate(text: str) -> bool:
@@ -320,6 +357,20 @@ async def _maybe_handle_memory_admin(text: str, user_id: int) -> Optional[str]:
         f"好，我已经更新这条记忆了。\n"
         f"旧版本：#{memory_id} -> archived\n"
         f"新版本：#{new_memory_id} -> {normalized_content}"
+    )
+
+
+def _build_action_confirmation(action_label: str, original_text: str) -> str:
+    function_name, function_purpose = _ACTION_FUNCTION_HINTS.get(
+        action_label,
+        ("relevant skill", "apply the requested write operation"),
+    )
+    return (
+        f"我理解你是要执行这个操作：{action_label}。\n"
+        f"预计调用：`{function_name}`\n"
+        f"作用：{function_purpose}\n"
+        f"原始内容：{original_text}\n"
+        "要我继续执行吗？回复“是”继续，回复“不要”取消。"
     )
 
 
@@ -488,6 +539,21 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     if session.interaction_count == 0:
         _reset_session_history(user_id, session.chat_id)
 
+    pending_action_key = (user_id, session.chat_id)
+    pending_action = _PENDING_ACTION.get(pending_action_key)
+    if pending_action:
+        if _is_yes_confirmation(text):
+            _PENDING_ACTION.pop(pending_action_key, None)
+            original_text = pending_action["original_text"]
+            prompt = _build_prompt(text=original_text, user_id=user_id, user_name=user_name, session=session)
+            reply = await _run_codex(prompt)
+            return _remember_and_reply(user_id, session.chat_id, text, reply)
+        if _is_no_confirmation(text):
+            _PENDING_ACTION.pop(pending_action_key, None)
+            reply = "好，这次操作我先不执行。"
+            return _remember_and_reply(user_id, session.chat_id, text, reply)
+        _PENDING_ACTION.pop(pending_action_key, None)
+
     memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
     if memory_admin_reply:
         return _remember_and_reply(user_id, session.chat_id, text, memory_admin_reply)
@@ -539,6 +605,15 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             f"准备写入：{scope}\n"
             "要我记下来吗？回复“是”或“不要”即可。"
         )
+        return _remember_and_reply(user_id, session.chat_id, text, reply)
+
+    write_action = _detect_write_action(text)
+    if write_action:
+        _PENDING_ACTION[pending_action_key] = {
+            "action_label": write_action,
+            "original_text": text,
+        }
+        reply = _build_action_confirmation(write_action, text)
         return _remember_and_reply(user_id, session.chat_id, text, reply)
 
     prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)

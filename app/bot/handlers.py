@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 from zoneinfo import ZoneInfo
 
-from app.core.agent import agent_handle, agent_handle_export, agent_handle_image
+from app.core.agent import agent_handle, agent_handle_export, agent_handle_image, reset_agent_context
 from app.config import (
     ALLOWED_USER_IDS,
     BOT_BACKEND,
@@ -29,9 +29,22 @@ from app.config import (
 )
 from app.bot.scheduler import budget_alert_job, monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.services.expense_service import delete_last_expense
-from app.core.session import get_or_create_session
+from app.core.session import get_or_create_session, reset_session
 
 logger = logging.getLogger(__name__)
+
+_HELP_LIKE_TEXTS = {
+    "help",
+    "帮助",
+    "你会什么",
+    "你能做什么",
+    "怎么用你",
+    "怎么使用你",
+    "有哪些命令",
+    "有什么命令",
+    "功能介绍",
+    "使用说明",
+}
 
 
 # ───────────────── Access control ─────────────────
@@ -61,6 +74,54 @@ def _get_session(update: Update):
     )
 
 
+def _build_help_text(session, categories_text: str) -> str:
+    help_text = (
+        "🗺 *小灰毛功能地图*\n\n"
+        "*1. 记账*\n"
+        "  `午饭 35`\n"
+        "  `打车 18`\n"
+        "  `午饭 50 人民币`\n"
+        "  也可以直接发送收据照片\n\n"
+        "*2. 查账*\n"
+        "  `本月花了多少`\n"
+        "  `餐饮花了多少`\n"
+        "  `餐饮明细`\n"
+        "  `看看最近5笔`\n"
+        "  `老婆花了多少`\n"
+        "  `家庭汇总`\n\n"
+        "*3. 预算*\n"
+        "  `餐饮预算设为1000`\n"
+        "  `预算还剩多少`\n"
+        "  `最近预算改过什么`\n\n"
+        "*4. 专项计划*\n"
+        "  `创建日本旅行计划`\n"
+        "  `开始日本旅行`\n"
+        "  `日本签证 300`\n"
+        "  `日本旅行汇总`\n\n"
+        "*5. 记忆*\n"
+        "  我会先问你要不要记，再入库\n"
+        "  `你还记得什么`\n"
+        "  `归档记忆 #12`\n"
+        "  `把记忆 #12 改成 ...`\n\n"
+        "*6. 常用命令*\n"
+        "  `/help` — 查看这份功能地图\n"
+        "  `/memory` — 查看记忆\n"
+        "  `/reset` — 清空当前聊天上下文\n"
+        "  `/delete` — 删除最近一条账目\n"
+        "  `/export` — 导出 CSV\n"
+        "  `/usage` — 查看当前运行模式\n\n"
+        f"*分类*：{categories_text}\n"
+        f"*货币*：{CURRENCY}（支持 CNY/USD/AUD/JPY/MYR/EUR 等）"
+    )
+
+    if session.is_group:
+        help_text += "\n\n💡 在群聊里，我会尽量从家庭视角回答，避免暴露过多个人细节。"
+    else:
+        help_text += "\n\n💡 你也可以直接问我：`你会什么`、`怎么改记忆`、`怎么开始旅行计划`。"
+
+    return help_text
+
+
 # ───────────────── Commands ─────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,7 +139,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🧠 *记忆*：我会记住你的偏好和目标\n"
         "📷 *收据*：发送照片自动识别\n"
         "📤 *导出*：/export\n\n"
-        "📌 *命令*：/help /delete /export /usage /memory\n\n"
+        "📌 *命令*：/help /delete /export /usage /memory /reset\n\n"
         f"💰 {CURRENCY} | 🤖 {BOT_BACKEND}",
         parse_mode="Markdown",
     )
@@ -89,42 +150,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     cats = "、".join(CATEGORIES)
     session = _get_session(update)
-
-    help_text = (
-        "📖 *使用帮助*\n\n"
-        "*记账*\n"
-        "  `午饭 35`  `打车 18`  `午饭 50 人民币`\n"
-        "  发送收据照片自动识别\n\n"
-        "*查询*\n"
-        "  👤 `本月花了多少` / `餐饮花了多少` / `餐饮明细`\n"
-        "  👫 `老婆花了多少`\n"
-        "  👨‍👩‍👧 `总共花了多少` / `家庭汇总` / `家庭餐饮明细`\n\n"
-        "*预算*\n"
-        "  `餐饮预算设为1000` / `预算还剩多少`\n\n"
-        "*事件标签*\n"
-        "  `开始日本旅行` → `结束旅行` → `日本旅行汇总`\n\n"
-        "*智能功能*\n"
-        "  `分析消费` / `怎么省钱` / `财务规划`\n\n"
-        "*记忆*\n"
-        "  我会自动记住你的偏好和目标\n"
-        "  `你还记得什么` — 查看记忆\n"
-        "  `归档记忆 #12` — 归档某条记忆\n"
-        "  `把记忆 #12 改成 ...` — 更新某条记忆\n\n"
-        "*命令*\n"
-        "  /start — 开始\n"
-        "  /help — 帮助\n"
-        "  /delete — 删除最近一条\n"
-        "  /export — 导出 CSV\n"
-        "  /export family — 导出家庭 CSV\n"
-        "  /usage — 查看当前桥接模式\n"
-        "  /memory — 查看我的记忆\n\n"
-        f"*分类*：{cats}\n"
-        f"*货币*：{CURRENCY}（支持 CNY/USD/AUD/JPY/MYR/EUR 等）"
-    )
-
-    if session.is_group:
-        help_text += "\n\n💡 在群聊中，我会以家庭视角回复，保护个人隐私。"
-
+    help_text = _build_help_text(session, cats)
     await update.message.reply_text(help_text, parse_mode="Markdown")  # type: ignore[union-attr]
 
 
@@ -175,6 +201,18 @@ async def cmd_usage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _check_access(update):
+        return
+    user = update.effective_user  # type: ignore[union-attr]
+    chat = update.effective_chat  # type: ignore[union-attr]
+    reset_agent_context(user.id, chat.id)
+    reset_session(user.id, chat.id)
+    await update.message.reply_text(  # type: ignore[union-attr]
+        "已清空当前聊天上下文。短期对话状态已重置，但账目、记忆和画像都保留。"
+    )
+
+
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show current memories for the user."""
     if not await _check_access(update):
@@ -214,6 +252,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id: int = user.id
     user_name: str = user.full_name or user.username or str(user_id)
     session = _get_session(update)
+    if text.strip().lower() in _HELP_LIKE_TEXTS:
+        cats = "、".join(CATEGORIES)
+        await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
+        return
 
     await update.message.chat.send_action("typing")  # type: ignore[union-attr]
 
@@ -269,6 +311,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("memory", cmd_memory))
+    app.add_handler(CommandHandler("reset", cmd_reset))
 
     # Text messages → agent
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

@@ -112,6 +112,11 @@ def get_active_session_count() -> int:
     return sum(1 for s in _sessions.values() if not s.is_expired())
 
 
+def reset_session(user_id: int, chat_id: int) -> None:
+    """Remove the current session so the next turn starts fresh."""
+    _sessions.pop((user_id, chat_id), None)
+
+
 # ═══════════════════════════════════════════
 #  Legacy compatibility
 # ═══════════════════════════════════════════

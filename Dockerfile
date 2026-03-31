@@ -1,18 +1,20 @@
-FROM python:3.11-slim
+FROM node:20-bookworm-slim AS codex-runtime
 
 ARG CODEX_NPM_PACKAGE=@openai/codex
 
+RUN npm install -g ${CODEX_NPM_PACKAGE}
+
+FROM python:3.11-slim-bookworm
+
 WORKDIR /app
 
-# System dependencies for Codex CLI + Python app
+# Keep system package usage minimal to avoid slow apt mirrors during cloud builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nodejs \
-    npm \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Codex CLI
-RUN npm install -g ${CODEX_NPM_PACKAGE}
+# Bring in the preinstalled Node runtime + Codex CLI from the Node stage.
+COPY --from=codex-runtime /usr/local/ /usr/local/
 
 # Install Python dependencies
 COPY requirements.txt .
