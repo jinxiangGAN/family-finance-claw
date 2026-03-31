@@ -27,7 +27,7 @@ from app.config import (
     WEEKLY_SUMMARY_DAY,
     WEEKLY_SUMMARY_HOUR,
 )
-from app.bot.scheduler import budget_alert_job, monthly_archive_job, proactive_nudge_job, weekly_summary_job
+from app.bot.scheduler import monthly_archive_job, proactive_nudge_job, weekly_summary_job
 from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.services.expense_service import delete_last_expense
 from app.core.session import get_or_create_session, reset_session
@@ -242,6 +242,12 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # ───────────────── Message handlers ─────────────────
 
+def _safe_reply_text(reply: str) -> str:
+    cleaned = (reply or "").strip()
+    if cleaned:
+        return cleaned
+    return "我这次没有稳定拿到结果，你再发一次我继续帮你看。"
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route text messages through the session-aware LLM agent."""
     if not await _check_access(update):
@@ -270,7 +276,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     reply = await agent_handle(route.message_text, user_id, user_name, session, route.assistant_id)
-    await update.message.reply_text(reply)  # type: ignore[union-attr]
+    await update.message.reply_text(_safe_reply_text(reply))  # type: ignore[union-attr]
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -306,7 +312,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         await file.download_to_drive(custom_path=tmp_path)
         reply = await agent_handle_image(tmp_path, caption, user_id, user_name, session, route.assistant_id)
-        await update.message.reply_text(reply)  # type: ignore[union-attr]
+        await update.message.reply_text(_safe_reply_text(reply))  # type: ignore[union-attr]
     finally:
         try:
             os.unlink(tmp_path)
@@ -356,15 +362,7 @@ def build_application() -> Application:
     )
     logger.info("Scheduled: proactive nudge — Friday 18:00")
 
-    # 3. Daily budget alert (9PM)
-    app.job_queue.run_daily(  # type: ignore[union-attr]
-        budget_alert_job,
-        time=time(hour=21, minute=0, tzinfo=tz),
-        name="budget_alert",
-    )
-    logger.info("Scheduled: daily budget alert — 21:00")
-
-    # 4. Monthly archive (1st of month, 1AM)
+    # 3. Monthly archive (1st of month, 1AM)
     app.job_queue.run_monthly(  # type: ignore[union-attr]
         monthly_archive_job,
         when=time(hour=1, minute=0, tzinfo=tz),
