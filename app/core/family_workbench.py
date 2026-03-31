@@ -12,9 +12,14 @@ import httpx
 from app.config import FAMILY_MEMBERS, TELEGRAM_BOT_TOKEN
 from app.core.session import get_private_chat_route
 
-_FORWARD_MESSAGE_RE = re.compile(
-    r"^\s*(?:给|发消息给|帮我发给|转告|转发给|跟)\s*(?P<target>[^\s:：]+)\s*(?:发消息|带句话|说|讲一下|：|:)?\s*(?P<body>.+?)\s*$"
-)
+_FORWARD_MESSAGE_PATTERNS = [
+    re.compile(
+        r"^\s*(?:帮我)?给\s*(?P<target>[^\s,，:：]+)\s*(?:发消息|发|带句话|说一声|说)\s*[:：,，]?\s*(?P<body>.+?)\s*$"
+    ),
+    re.compile(
+        r"^\s*(?:发消息给|发给|转告|转发给|跟)\s*(?P<target>[^\s,，:：]+)\s*(?:说|讲一下|带句话)?\s*[:：,，]?\s*(?P<body>.+?)\s*$"
+    ),
+]
 
 
 def _resolve_family_member_id(identifier: str, *, exclude_user_id: int | None = None) -> int | None:
@@ -38,7 +43,12 @@ def _resolve_family_member_id(identifier: str, *, exclude_user_id: int | None = 
 
 
 def _parse_forward_message(text: str, *, sender_user_id: int) -> dict[str, Any]:
-    match = _FORWARD_MESSAGE_RE.match(text.strip())
+    match = None
+    stripped = text.strip()
+    for pattern in _FORWARD_MESSAGE_PATTERNS:
+        match = pattern.match(stripped)
+        if match:
+            break
     if not match:
         raise ValueError("Could not parse a family forwarding request.")
     target_id = _resolve_family_member_id(match.group("target"), exclude_user_id=sender_user_id)
