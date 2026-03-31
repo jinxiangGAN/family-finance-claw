@@ -168,7 +168,6 @@ class CodexExecRuntime:
                 "--sandbox",
                 "workspace-write",
                 "--skip-git-repo-check",
-                "--output-last-message",
             ]
         else:
             args = [
@@ -179,7 +178,6 @@ class CodexExecRuntime:
                 "workspace-write",
                 "--cd",
                 config.workspace_path,
-                "--output-last-message",
             ]
 
         for writable_dir in config.all_writable_dirs:
@@ -188,7 +186,7 @@ class CodexExecRuntime:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
         output_path = tmp.name
         tmp.close()
-        args.append(output_path)
+        args.extend(["--output-last-message", output_path])
         args.extend(["--color", "never"])
 
         if config.codex_profile:
