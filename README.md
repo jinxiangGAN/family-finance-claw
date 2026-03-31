@@ -18,6 +18,7 @@ For latency-sensitive common turns, the bot now also uses a simple-finance fast 
 
 - Natural-language expense tracking in Telegram
 - Receipt/photo-based expense handling
+- Live-first exchange-rate lookup with SQLite cache and static fallback
 - Personal vs family queries
 - Monthly budgets with change history and deduplicated alerts
 - `regular` vs `special` spending scopes
@@ -161,6 +162,9 @@ Even though the repo currently runs one assistant, the structure now leaves room
 
 - [`app/services/stats_service.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/services/stats_service.py)
   Summaries, aggregations, report data.
+
+- [`app/services/fx_service.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/services/fx_service.py)
+  Live FX lookup, cache, and fallback conversion logic.
 
 - [`app/database.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/database.py)
   SQLite schema and migrations.

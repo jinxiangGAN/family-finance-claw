@@ -8,6 +8,7 @@ from app.services.skills import (
     skill_query_budget,
     skill_query_budget_changes,
     skill_query_category_total,
+    skill_query_exchange_rate,
     skill_query_monthly_archive,
     skill_query_monthly_total,
     skill_query_summary,
@@ -136,6 +137,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_exchange_rate",
+            "description": "查询两种货币之间的汇率。优先使用在线汇率，失败时回退到缓存或参考汇率。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "base_currency": {"type": "string", "description": "基础货币，例如 USD/CNY/SGD"},
+                    "quote_currency": {"type": "string", "description": "目标货币，例如 SGD。默认是系统默认货币。"},
+                },
+                "required": ["base_currency"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_spending_analysis",
             "description": "Retrieve spending data and patterns for financial analysis and advice.",
             "parameters": {
@@ -175,6 +191,7 @@ HANDLERS = {
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
     "query_budget_changes": skill_query_budget_changes,
+    "query_exchange_rate": skill_query_exchange_rate,
     "get_spending_analysis": skill_get_spending_analysis,
     "query_monthly_archive": skill_query_monthly_archive,
 }

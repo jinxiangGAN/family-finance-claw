@@ -57,6 +57,7 @@ _FINANCE_HINT_TOKENS = (
     "签证",
     "明细",
     "汇总",
+    "汇率",
     "统计",
     "账单",
     "删除",
@@ -115,6 +116,7 @@ _FAST_WORKBENCH_INTENTS = {
     "recent_expenses",
     "month_total",
     "today_total",
+    "exchange_rate",
     "budget_query",
     "budget_set",
     "delete_by_id",
@@ -126,11 +128,37 @@ _FAST_INTENT_ACTIONS: dict[str, str] = {
     "recent_expenses": "finance.recent_expenses",
     "month_total": "finance.month_total",
     "today_total": "finance.today_total",
+    "exchange_rate": "finance.exchange_rate",
     "budget_query": "finance.budget_query",
     "budget_set": "finance.budget_set",
     "delete_by_id": "finance.delete_by_id",
     "forward_message": "family.forward_message",
 }
+_EXCHANGE_RATE_HINTS = (
+    "人民币",
+    "美元",
+    "欧元",
+    "英镑",
+    "日元",
+    "澳元",
+    "马币",
+    "令吉",
+    "泰铢",
+    "韩元",
+    "新币",
+    "新加坡元",
+    "SGD",
+    "USD",
+    "CNY",
+    "RMB",
+    "EUR",
+    "GBP",
+    "JPY",
+    "AUD",
+    "MYR",
+    "THB",
+    "KRW",
+)
 _ACTION_TAG_RE = re.compile(r"<ACTION>\s*(\{.*?\})\s*</ACTION>", re.DOTALL)
 _FINAL_TAG_RE = re.compile(r"<FINAL>\s*(.*?)\s*</FINAL>", re.DOTALL)
 _MAX_FULL_PATH_ACTION_STEPS = 4
@@ -277,6 +305,7 @@ def _looks_like_query(text: str) -> bool:
             "汇总",
             "分析",
             "预算",
+            "汇率",
             "记得",
             "上次",
             "之前",
@@ -562,11 +591,26 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return "month_total"
     if _TODAY_TOTAL_RE.match(stripped):
         return "today_total"
+    if _looks_like_exchange_rate_query(stripped):
+        return "exchange_rate"
     if _BUDGET_QUERY_RE.match(stripped):
         return "budget_query"
     if _BUDGET_SET_RE.match(stripped):
         return "budget_set"
     return None
+
+
+def _looks_like_exchange_rate_query(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    upper = stripped.upper()
+    hint_hits = sum(1 for hint in _EXCHANGE_RATE_HINTS if hint in stripped or hint in upper)
+    if "汇率" in stripped and hint_hits >= 1:
+        return True
+    if any(token in stripped for token in ("兑", "等于", "/")) and hint_hits >= 2:
+        return True
+    return False
 
 
 def _build_prompt(
@@ -733,6 +777,7 @@ You have exactly two output modes and must choose one:
 1. A resident action request:
 <ACTION>{{"kind":"bridge.snapshot"}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.store_memory","content":"Reduce takeout spending on weekdays.","category":"goal","importance":7,"shared":false}}</ACTION>
 2. A final Telegram reply:
 <FINAL>...</FINAL>
@@ -878,6 +923,7 @@ def _build_fast_prompt(
         "record_expense": ("finance.record_expense", "simple expense recording"),
         "recent_expenses": ("finance.recent_expenses", "simple recent-records query"),
         "month_total": ("finance.month_total", "simple current-month total query"),
+        "exchange_rate": ("finance.exchange_rate", "simple exchange-rate query"),
         "budget_query": ("finance.budget_query", "simple budget-status query"),
         "budget_set": ("finance.budget_set", "simple budget update"),
         "delete_by_id": ("finance.delete_by_id", "simple delete-by-id"),

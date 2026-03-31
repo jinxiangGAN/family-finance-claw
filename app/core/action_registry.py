@@ -38,6 +38,7 @@ _ACTION_MAP: dict[str, tuple[str, str]] = {
     "finance.recent_expenses": ("finance", "recent_expenses"),
     "finance.month_total": ("finance", "month_total"),
     "finance.today_total": ("finance", "today_total"),
+    "finance.exchange_rate": ("finance", "exchange_rate"),
     "finance.budget_query": ("finance", "budget_query"),
     "finance.budget_set": ("finance", "budget_set"),
     "finance.delete_by_id": ("finance", "delete_by_id"),

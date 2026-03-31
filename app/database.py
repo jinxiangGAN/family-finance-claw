@@ -153,6 +153,17 @@ CREATE_TABLES_SQL = [
         UNIQUE(year, month, user_id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS fx_rates (
+        base_currency   TEXT    NOT NULL,
+        quote_currency  TEXT    NOT NULL,
+        rate            REAL    NOT NULL,
+        effective_date  TEXT    NOT NULL DEFAULT '',
+        source          TEXT    NOT NULL DEFAULT 'live',
+        fetched_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (base_currency, quote_currency)
+    );
+    """,
 
     # Legacy flat memories table (kept for backward compat migration)
     """
@@ -198,6 +209,7 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_core_profiles_user  ON core_profiles(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_monthly_summaries_ym ON monthly_summaries(year, month);",
     "CREATE INDEX IF NOT EXISTS idx_monthly_reports_ym ON monthly_reports(year, month);",
+    "CREATE INDEX IF NOT EXISTS idx_fx_rates_fetched_at ON fx_rates(fetched_at);",
 ]
 
 # Migrations (idempotent, errors silenced)

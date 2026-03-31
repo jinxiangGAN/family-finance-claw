@@ -17,6 +17,7 @@ from app.config import CATEGORIES, CURRENCY
 from app.database import init_db
 from app.core.observability import log_event, timed_event
 from app.services.expense_service import get_today_total
+from app.services.fx_service import normalize_currency_code
 from app.services.skills import execute_skill
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,15 @@ _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\
 _TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
 _BUDGET_SET_RE = re.compile(
     r"^\s*(?P<category>[\u4e00-\u9fffA-Za-z_]+)\s*预算\s*(?:设为|改成|改为|调整为)\s*(?P<amount>\d+(?:\.\d+)?)\s*$"
+)
+_EXCHANGE_RATE_EQUAL_RE = re.compile(
+    r"^\s*(?:现在|今天)?\s*1\s*(?P<base>[\u4e00-\u9fffA-Za-z]+)\s*(?:等于|兑|对)\s*多少\s*(?P<quote>[\u4e00-\u9fffA-Za-z]+)\s*[？?]?\s*$"
+)
+_EXCHANGE_RATE_PAIR_RE = re.compile(
+    r"^\s*(?:现在|今天|查下|查一下|看看)?\s*(?P<base>[\u4e00-\u9fffA-Za-z]+)\s*(?:兑|对|/)\s*(?P<quote>[\u4e00-\u9fffA-Za-z]+)\s*(?:汇率)?(?:多少|是多少)?\s*[？?]?\s*$"
+)
+_EXCHANGE_RATE_SINGLE_RE = re.compile(
+    r"^\s*(?:现在|今天|查下|查一下|看看)?\s*(?P<base>[\u4e00-\u9fffA-Za-z]+)\s*(?:汇率)(?:多少|是多少)?\s*[？?]?\s*$"
 )
 
 _CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
@@ -135,6 +145,22 @@ def _parse_budget_set(text: str) -> dict[str, Any]:
     }
 
 
+def _parse_exchange_rate(text: str) -> dict[str, Any]:
+    match = _EXCHANGE_RATE_EQUAL_RE.match(text) or _EXCHANGE_RATE_PAIR_RE.match(text)
+    if match:
+        return {
+            "base_currency": normalize_currency_code(match.group("base")),
+            "quote_currency": normalize_currency_code(match.group("quote")),
+        }
+    match = _EXCHANGE_RATE_SINGLE_RE.match(text)
+    if match:
+        return {
+            "base_currency": normalize_currency_code(match.group("base")),
+            "quote_currency": CURRENCY,
+        }
+    raise ValueError("Could not parse the exchange rate query.")
+
+
 def _parse_delete_by_id(text: str) -> dict[str, Any]:
     match = _DELETE_BY_ID_RE.match(text)
     if not match:
@@ -204,11 +230,16 @@ def _render_delete_by_id(result: dict[str, Any]) -> str:
     return str(result.get("confirmation") or result.get("message") or "已删除。")
 
 
+def _render_exchange_rate(result: dict[str, Any]) -> str:
+    return str(result.get("message") or "这次没查到汇率。")
+
+
 _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "record_expense": ("record_expense", _parse_record_expense),
     "recent_expenses": ("query_recent_expenses", _parse_recent_expenses),
     "month_total": ("query_monthly_total", _parse_month_total),
     "today_total": ("query_today_total", _parse_today_total),
+    "exchange_rate": ("query_exchange_rate", _parse_exchange_rate),
     "budget_query": ("query_budget", _parse_budget_query),
     "budget_set": ("set_budget", _parse_budget_set),
     "delete_by_id": ("delete_expense_by_id", _parse_delete_by_id),
@@ -219,6 +250,7 @@ _WORKBENCH_RENDERERS: dict[str, Any] = {
     "recent_expenses": _render_recent_expenses,
     "month_total": _render_month_total,
     "today_total": _render_today_total,
+    "exchange_rate": _render_exchange_rate,
     "budget_query": _render_budget_query,
     "budget_set": _render_budget_set,
     "delete_by_id": _render_delete_by_id,

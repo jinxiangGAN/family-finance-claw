@@ -67,6 +67,8 @@ LOCATION: str = os.getenv("LOCATION", "Singapore")
 
 # Currency (default display currency)
 CURRENCY: str = os.getenv("CURRENCY", "SGD")
+FX_API_BASE_URL: str = os.getenv("FX_API_BASE_URL", "https://api.frankfurter.app")
+FX_CACHE_TTL_SECONDS: int = int(os.getenv("FX_CACHE_TTL_SECONDS", "43200"))
 
 # Expense categories
 CATEGORIES: list[str] = ["餐饮", "交通", "超市", "购物", "房租", "水电网", "娱乐", "医疗", "其他"]

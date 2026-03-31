@@ -21,6 +21,7 @@ from app.services.expense_service import (
     get_expenses,
     save_expense,
 )
+from app.services.fx_service import convert_amount, fx_source_label, get_exchange_rate
 from app.services.stats_service import (
     get_category_total,
     get_member_name,
@@ -33,36 +34,6 @@ from app.services.stats_service import (
 )
 
 logger = logging.getLogger(__name__)
-
-# ⚠️ REFERENCE exchange rates — NOT real-time.
-# These are approximate mid-market rates for quick household bookkeeping.
-# For actual financial decisions, check a live source.
-# TODO: Replace with a live API (e.g. exchangerate-api.com) if long-term accuracy matters.
-EXCHANGE_RATES: dict[str, float] = {
-    "SGD": 1.0,
-    "CNY": 0.19,   # 1 CNY ≈ 0.19 SGD
-    "RMB": 0.19,
-    "USD": 1.35,   # 1 USD ≈ 1.35 SGD
-    "AUD": 0.88,   # 1 AUD ≈ 0.88 SGD
-    "JPY": 0.009,  # 1 JPY ≈ 0.009 SGD
-    "MYR": 0.30,   # 1 MYR ≈ 0.30 SGD
-    "EUR": 1.45,   # 1 EUR ≈ 1.45 SGD
-    "GBP": 1.70,   # 1 GBP ≈ 1.70 SGD
-    "THB": 0.038,  # 1 THB ≈ 0.038 SGD
-    "KRW": 0.001,  # 1 KRW ≈ 0.001 SGD
-}
-
-
-def _convert_to_sgd(amount: float, currency: str) -> float:
-    """Convert amount to SGD using exchange rates."""
-    currency = currency.upper()
-    if currency == "SGD":
-        return amount
-    rate = EXCHANGE_RATES.get(currency)
-    if rate is None:
-        logger.warning("Unknown currency %s, treating as SGD", currency)
-        return amount
-    return round(amount * rate, 2)
 
 
 # ═══════════════════════════════════════════
@@ -92,7 +63,14 @@ def skill_record_expense(user_id: int, user_name: str, params: dict) -> dict:
     if ledger_type not in {"regular", "special"}:
         ledger_type = "special" if event_tag else "regular"
 
-    amount_sgd = _convert_to_sgd(amount, currency)
+    conversion = convert_amount(amount, currency, CURRENCY)
+    if currency != CURRENCY and not conversion.get("success"):
+        return {
+            "success": False,
+            "message": str(conversion.get("message") or f"暂时没法把 {currency} 换算成 {CURRENCY}。"),
+        }
+    amount_sgd = float(conversion.get("converted_amount", amount))
+    rate_source = str(conversion.get("source") or "reference")
 
     expense = Expense(
         user_id=user_id,
@@ -113,7 +91,7 @@ def skill_record_expense(user_id: int, user_name: str, params: dict) -> dict:
     # ── Build formatted confirmation string ──
     confirm_parts = [f"✅ 已记录：{category} {amount:.2f} {currency}"]
     if currency != CURRENCY:
-        confirm_parts[0] += f" → {amount_sgd:.2f} {CURRENCY}（参考汇率）"
+        confirm_parts[0] += f" → {amount_sgd:.2f} {CURRENCY}（{fx_source_label(rate_source)}）"
     confirm_parts.append(f"👤 归属：{user_name}")
     if note:
         confirm_parts.append(f"📝 备注：{note}")
@@ -138,6 +116,9 @@ def skill_record_expense(user_id: int, user_name: str, params: dict) -> dict:
     if currency != CURRENCY:
         result["amount_sgd"] = amount_sgd
         result["default_currency"] = CURRENCY
+        result["rate"] = float(conversion.get("rate", 1.0))
+        result["rate_source"] = rate_source
+        result["rate_effective_date"] = str(conversion.get("effective_date") or "")
     if event_tag:
         result["event_tag"] = event_tag
     result["ledger_type"] = ledger_type
@@ -514,6 +495,38 @@ def skill_query_budget_changes(user_id: int, user_name: str, params: dict) -> di
     }
 
 
+def skill_query_exchange_rate(user_id: int, user_name: str, params: dict) -> dict:
+    """Query a live-first exchange rate with cache and static fallback."""
+    base_currency = str(params.get("base_currency") or params.get("base") or "").strip()
+    quote_currency = str(params.get("quote_currency") or params.get("quote") or CURRENCY).strip()
+    if not base_currency:
+        return {"success": False, "message": "请告诉我要查哪种货币的汇率。"}
+
+    rate_result = get_exchange_rate(base_currency, quote_currency)
+    if not rate_result.get("success"):
+        return {
+            "success": False,
+            "message": str(rate_result.get("message") or "暂时查不到这组汇率。"),
+        }
+
+    source = str(rate_result.get("source") or "reference")
+    message = (
+        f"现在 1 {rate_result['base_currency']} ≈ {float(rate_result['rate']):.4f} "
+        f"{rate_result['quote_currency']}（{fx_source_label(source)}）"
+    )
+    if rate_result.get("effective_date"):
+        message += f"，日期：{rate_result['effective_date']}"
+    return {
+        "success": True,
+        "base_currency": rate_result["base_currency"],
+        "quote_currency": rate_result["quote_currency"],
+        "rate": float(rate_result["rate"]),
+        "source": source,
+        "effective_date": str(rate_result.get("effective_date") or ""),
+        "message": message,
+    }
+
+
 def skill_get_spending_analysis(user_id: int, user_name: str, params: dict) -> dict:
     """Get raw spending data for LLM analysis."""
     scope = params.get("scope", "me")
@@ -738,6 +751,7 @@ SKILL_MAP: dict[str, Any] = {
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
     "query_budget_changes": skill_query_budget_changes,
+    "query_exchange_rate": skill_query_exchange_rate,
     "get_spending_analysis": skill_get_spending_analysis,
     "start_event": skill_start_event,
     "stop_event": skill_stop_event,
@@ -900,6 +914,21 @@ TOOL_DEFINITIONS: list[dict] = [
                     "category": {"type": "string", "description": "可选：只看某个预算分类，'_total' 表示总预算"},
                     "limit": {"type": "integer", "description": "最多返回多少条，默认10，最大30"},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_exchange_rate",
+            "description": "查询一组货币之间的汇率。优先查在线汇率，失败时回退到缓存或参考汇率。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "base_currency": {"type": "string", "description": "基础货币，例如 USD/CNY/SGD"},
+                    "quote_currency": {"type": "string", "description": f"目标货币，例如 {CURRENCY}"},
+                },
+                "required": ["base_currency"],
             },
         },
     },
