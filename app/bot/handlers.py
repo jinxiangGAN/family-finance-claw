@@ -29,6 +29,8 @@ from app.config import (
     FAMILY_MEMBERS,
     TELEGRAM_BOT_TOKEN,
     TIMEZONE,
+    VOICE_MAX_DURATION_SECONDS,
+    VOICE_TRANSCRIPTION_ENABLED,
     WEEKLY_SUMMARY_DAY,
     WEEKLY_SUMMARY_HOUR,
 )
@@ -37,6 +39,7 @@ from app.core.assistant_router import DEFAULT_ASSISTANT_ROUTER
 from app.core.observability import log_event
 from app.core.session import get_or_create_session
 from app.core.telegram_sender import clear_telegram_sender, register_telegram_sender
+from app.services.speech_service import SpeechTranscriptionError, transcribe_short_voice
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +91,8 @@ def _build_help_text(session, categories_text: str) -> str:
         "  `午饭 35`\n"
         "  `打车 18`\n"
         "  `午饭 50 人民币`\n"
-        "  也可以直接发送收据照片\n\n"
+        "  也可以直接发送收据照片\n"
+        f"  也支持 {VOICE_MAX_DURATION_SECONDS} 秒内的短语音，先转文字再记\n\n"
         "*2. 查账*\n"
         "  `本月花了多少`\n"
         "  `餐饮花了多少`\n"
@@ -305,12 +309,9 @@ async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> No
     except TelegramError:
         logger.exception("Failed to send fallback error message to chat %s", chat.id)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Route text messages through the session-aware LLM agent."""
-    if not await _check_access(update):
-        return
 
-    text = update.message.text.strip()  # type: ignore[union-attr]
+async def _reply_for_text_input(update: Update, raw_text: str) -> None:
+    text = raw_text.strip()
     if not text:
         return
 
@@ -319,7 +320,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session = _get_session(update)
     user_name: str = session.display_name
     started_at = _time.perf_counter()
-    if text.strip().lower() in _HELP_LIKE_TEXTS:
+    if text.lower() in _HELP_LIKE_TEXTS:
         cats = "、".join(CATEGORIES)
         await update.message.reply_text(_build_help_text(session, cats), parse_mode="Markdown")  # type: ignore[union-attr]
         return
@@ -334,7 +335,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id=session.chat_id,
         assistant_id=route.assistant_id,
         is_group=session.is_group,
-        help_like=text.strip().lower() in _HELP_LIKE_TEXTS,
+        help_like=text.lower() in _HELP_LIKE_TEXTS,
         text_preview=text[:80],
     )
     if route.unknown_identifier:
@@ -353,6 +354,90 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         assistant_id=route.assistant_id,
         elapsed_ms=round((_time.perf_counter() - started_at) * 1000, 1),
     )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Route text messages through the session-aware LLM agent."""
+    if not await _check_access(update):
+        return
+
+    text = update.message.text.strip()  # type: ignore[union-attr]
+    if not text:
+        return
+    await _reply_for_text_input(update, text)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Transcribe short voice messages, echo the transcript, then reuse the text pipeline."""
+    if not await _check_access(update):
+        return
+    if not VOICE_TRANSCRIPTION_ENABLED:
+        await update.message.reply_text("小灰毛这边暂时还没打开语音转写。")  # type: ignore[union-attr]
+        return
+
+    voice = update.message.voice  # type: ignore[union-attr]
+    if not voice:
+        return
+    if voice.duration and voice.duration > VOICE_MAX_DURATION_SECONDS:
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"小灰毛这边现在只接短语音，尽量控制在 {VOICE_MAX_DURATION_SECONDS} 秒内。"
+        )
+        return
+
+    user = update.effective_user  # type: ignore[union-attr]
+    session = _get_session(update)
+    started_at = _time.perf_counter()
+    file = await voice.get_file()
+    suffix = ".ogg"
+    if file.file_path:
+        _, ext = os.path.splitext(file.file_path)
+        if ext:
+            suffix = ext
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp_path = tmp.name
+    tmp.close()
+
+    await update.message.chat.send_action("typing")  # type: ignore[union-attr]
+    log_event(
+        logger,
+        "telegram.voice_received",
+        user_id=user.id,
+        chat_id=session.chat_id,
+        duration_seconds=voice.duration or 0,
+        file_size=voice.file_size or 0,
+    )
+
+    try:
+        await file.download_to_drive(custom_path=tmp_path)
+        try:
+            transcription = await asyncio.to_thread(
+                transcribe_short_voice,
+                tmp_path,
+                duration_seconds=voice.duration,
+            )
+        except SpeechTranscriptionError as exc:
+            await update.message.reply_text(str(exc))  # type: ignore[union-attr]
+            return
+
+        text = str(transcription.get("text") or "").strip()
+        if not text:
+            await update.message.reply_text("小灰毛这次没稳稳听清，可以再发一条更短一点的语音。")  # type: ignore[union-attr]
+            return
+
+        await update.message.reply_text(f"小灰毛听成了：{text}")  # type: ignore[union-attr]
+        await _reply_for_text_input(update, text)
+        log_event(
+            logger,
+            "telegram.voice_replied",
+            user_id=user.id,
+            chat_id=session.chat_id,
+            elapsed_ms=round((_time.perf_counter() - started_at) * 1000, 1),
+            text_preview=text[:80],
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -444,6 +529,7 @@ def build_application() -> Application:
 
     # Text messages → agent
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     # Photo messages → Receipt OCR
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

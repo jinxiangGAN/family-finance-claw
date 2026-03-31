@@ -70,6 +70,19 @@ CURRENCY: str = os.getenv("CURRENCY", "SGD")
 FX_API_BASE_URL: str = os.getenv("FX_API_BASE_URL", "https://api.frankfurter.app")
 FX_CACHE_TTL_SECONDS: int = int(os.getenv("FX_CACHE_TTL_SECONDS", "43200"))
 
+# Speech-to-text
+VOICE_TRANSCRIPTION_ENABLED: bool = os.getenv("VOICE_TRANSCRIPTION_ENABLED", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+VOICE_MAX_DURATION_SECONDS: int = int(os.getenv("VOICE_MAX_DURATION_SECONDS", "45"))
+VOICE_TRANSCRIPTION_MODEL: str = os.getenv("VOICE_TRANSCRIPTION_MODEL", "base")
+VOICE_TRANSCRIPTION_LANGUAGE: str = os.getenv("VOICE_TRANSCRIPTION_LANGUAGE", "zh")
+VOICE_TRANSCRIPTION_DEVICE: str = os.getenv("VOICE_TRANSCRIPTION_DEVICE", "cpu")
+VOICE_TRANSCRIPTION_COMPUTE_TYPE: str = os.getenv("VOICE_TRANSCRIPTION_COMPUTE_TYPE", "int8")
+
 # Expense categories
 CATEGORIES: list[str] = ["餐饮", "交通", "超市", "购物", "房租", "水电网", "娱乐", "医疗", "其他"]
 

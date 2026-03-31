@@ -17,6 +17,7 @@ For latency-sensitive common turns, the bot now also uses a simple-finance fast 
 ## What It Does
 
 - Natural-language expense tracking in Telegram
+- Short voice-message transcription before normal text handling
 - Receipt/photo-based expense handling
 - Live-first exchange-rate lookup with SQLite cache and static fallback
 - Personal vs family queries
@@ -174,6 +175,7 @@ Even though the repo currently runs one assistant, the structure now leaves room
 ### Expense handling
 
 - Short commands like `午饭 15` should record directly.
+- Short voice messages are transcribed first, echoed back as `小灰毛听成了：...`, and then sent through the normal text path.
 - Simple finance requests like `午饭 15`, `本月花了多少`, `看看最近5笔`, `删除 #123`, and `餐饮预算设为1000` should prefer the fast path.
 - High-risk writes should confirm first:
   - delete expense
@@ -223,6 +225,8 @@ Natural-language help also works, such as:
 ```bash
 pip install -r requirements.txt
 ```
+
+The first short-voice transcription may also trigger a one-time local speech-model download for `faster-whisper`.
 
 ### 2. Prepare `.env`
 
