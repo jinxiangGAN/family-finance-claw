@@ -27,6 +27,7 @@ from app.config import (
     DATABASE_PATH,
     FAMILY_MEMBERS,
     LOCATION,
+    PYTHON_BIN,
     TIMEZONE,
 )
 from app.core.session import Session
@@ -120,10 +121,10 @@ def reset_agent_context(user_id: int, chat_id: int) -> None:
 
 def _format_history(history: list[dict[str, str]]) -> str:
     if not history:
-        return "无"
+        return "None"
     lines: list[str] = []
     for item in history:
-        role = "用户" if item["role"] == "user" else "助手"
+        role = "User" if item["role"] == "user" else "Assistant"
         lines.append(f"- {role}: {item['content']}")
     return "\n".join(lines)
 
@@ -137,34 +138,34 @@ def _format_db_snapshot(user_id: int) -> str:
     lines = ["[Database Snapshot]"]
 
     if recent_expenses:
-        lines.append("最近账目记录:")
+        lines.append("Recent expense records:")
         for exp in recent_expenses:
             lines.append(
                 f"- #{exp.id} {exp.category} {exp.amount:.2f} {exp.currency} "
-                f"[{exp.ledger_type}] 备注:{exp.note or '无'} "
-                f"事件:{exp.event_tag or '无'} 时间:{exp.created_at}"
+                f"[{exp.ledger_type}] note:{exp.note or 'none'} "
+                f"event:{exp.event_tag or 'none'} created_at:{exp.created_at}"
             )
     else:
-        lines.append("最近账目记录: 无")
+        lines.append("Recent expense records: none")
 
     if recent_memories:
-        lines.append("最近记忆:")
+        lines.append("Recent memories:")
         for memory in recent_memories:
-            scope = "家庭" if memory.get("scope") == "family" else "个人"
+            scope = "family" if memory.get("scope") == "family" else "personal"
             lines.append(
                 f"- #{memory['id']} [{scope}/{memory['category']}] {memory['content']} "
                 f"(importance={memory['importance']})"
             )
     else:
-        lines.append("最近记忆: 无")
+        lines.append("Recent memories: none")
 
     if profile_entries:
-        lines.append("当前画像/Profile:")
+        lines.append("Current profile:")
         for entry in profile_entries:
-            scope = "家庭" if entry.get("scope") == "family" else "个人"
+            scope = "family" if entry.get("scope") == "family" else "personal"
             lines.append(f"- [{scope}] {entry['key']}: {entry['value']}")
     else:
-        lines.append("当前画像/Profile: 无")
+        lines.append("Current profile: none")
 
     return "\n".join(lines)
 
@@ -425,9 +426,9 @@ Hard rules:
 13. If you did not personally query or update the database in this turn, do not state specific numbers, historical facts, preferences, or claims like "you said before".
 14. When the user expresses a stable preference, goal, habit, or family decision, do not store it immediately. Ask for confirmation first, and only store it after explicit consent.
 15. Inside this Telegram bridge, use only these whitelisted CLI patterns for finance or memory facts:
-    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}
-    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name <skill_name> --params-json '<json>'
-    - PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops store-memory --user-id {user_id} ...
+    - PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops snapshot --user-id {user_id}
+    - PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name <skill_name> --params-json '<json>'
+    - PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops store-memory --user-id {user_id} ...
 16. Do not write temporary scripts just to fetch numbers or memory. Do not use other repository entrypoints instead of `bridge_ops`.
 17. If the user is only chatting, thanking you, venting, or confirming something, do not fabricate finance facts. Reply naturally and briefly.
 18. If the user wants to delete an expense, prefer checking records with `query_recent_expenses` first and then use `delete_expense_by_id`. Use `delete_last_expense` only for explicit "undo last expense" requests.
@@ -441,11 +442,11 @@ Hard rules:
 24. If a message mixes casual chat with a finance request, give one short warm response first, then handle the finance part.
 
 Recommended command patterns:
-- Prefer `PYTHONPYCACHEPREFIX=/tmp/pycache python3 ...` for short commands to avoid pycache permission issues.
-- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops snapshot --user-id {user_id}`
-- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_monthly_total --params-json '{{"scope":"me"}}'`
-- To inspect recent expenses: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_recent_expenses --params-json '{{"scope":"me","limit":10}}'`
-- To inspect budget changes: `PYTHONPYCACHEPREFIX=/tmp/pycache python3 -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_budget_changes --params-json '{{"limit":10}}'`
+- Prefer `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} ...` for short commands to avoid pycache permission issues.
+- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops snapshot --user-id {user_id}`
+- Preferred: `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_monthly_total --params-json '{{"scope":"me"}}'`
+- To inspect recent expenses: `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_recent_expenses --params-json '{{"scope":"me","limit":10}}'`
+- To inspect budget changes: `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name query_budget_changes --params-json '{{"limit":10}}'`
 
 Context:
 - Current time: {now}

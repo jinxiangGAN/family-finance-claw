@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +17,7 @@ CODEX_PROFILE: str = os.getenv("CODEX_PROFILE", "")
 CODEX_HOME: str = os.getenv("CODEX_HOME", os.path.expanduser("~/.codex"))
 CODEX_TIMEOUT_SECONDS: int = int(os.getenv("CODEX_TIMEOUT_SECONDS", "180"))
 CODEX_WORKDIR: str = os.getenv("CODEX_WORKDIR", os.getcwd())
+PYTHON_BIN: str = os.getenv("PYTHON_BIN", sys.executable)
 
 # Legacy LLM settings kept for backward-compatible imports in helper modules.
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "codex")

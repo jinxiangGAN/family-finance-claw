@@ -6,14 +6,12 @@ import shutil
 import subprocess
 import sys
 
-from app.config import BOT_BACKEND, CODEX_BIN, CODEX_HOME, CODEX_MODEL, TELEGRAM_BOT_TOKEN
+from app.config import BOT_BACKEND, CODEX_BIN, CODEX_HOME, CODEX_MODEL, CODEX_WORKDIR, DATABASE_PATH, TELEGRAM_BOT_TOKEN
 from app.database import init_db
 from app.bot.handlers import build_application
 
-import os as _os
-
-_log_dir = _os.path.dirname(_os.getenv("DATABASE_PATH", "data/expenses.db")) or "data"
-_os.makedirs(_log_dir, exist_ok=True)
+_log_dir = os.path.dirname(DATABASE_PATH) or "data"
+os.makedirs(_log_dir, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +48,9 @@ def main() -> None:
         sys.exit(1)
     if not os.listdir(CODEX_HOME):
         logger.error("CODEX_HOME is empty: %s. Run 'codex login' first and mount the resulting directory.", CODEX_HOME)
+        sys.exit(1)
+    if not os.path.isdir(CODEX_WORKDIR):
+        logger.error("CODEX_WORKDIR does not exist: %s", CODEX_WORKDIR)
         sys.exit(1)
 
     # Initialize database
