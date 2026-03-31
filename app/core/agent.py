@@ -633,8 +633,6 @@ def _build_fast_prompt(
 ) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-    chat_kind = "private chat" if session.is_private else "group chat"
-    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
     allowed_skills = {
         "record_expense": "record_expense",
         "recent_expenses": "query_recent_expenses",
@@ -652,33 +650,20 @@ def _build_fast_prompt(
         "budget_set": "This is a simple budget-update turn. Prefer one direct skill call and one short grounded answer.",
         "delete_by_id": "This is a simple delete-by-id turn. Prefer one direct skill call and one short grounded answer.",
     }[fast_intent]
-    return f"""You are `小灰毛`, handling a SIMPLE finance turn for a Telegram family finance bot.
+    return f"""Fast finance turn for `小灰毛`.
 
-This is the fast path. Keep the turn narrow, grounded, and short.
+Reply in Simplified Chinese only.
+Use exactly one skill: `{required_skill}`.
+Only run:
+`PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name {required_skill} --params-json '<json>'`
 
-Rules:
-1. Use exactly one database-grounded skill unless the message is genuinely impossible to parse.
-2. Only use this bridge command form:
-   `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name {required_skill} --params-json '<json>'`
-3. Do not inspect repo files, do not modify code, do not use ad-hoc SQL, and do not use other skills.
-4. Output only the final Telegram reply in Simplified Chinese.
-5. Keep the reply brief and practical.
-6. If the user message is too ambiguous for this one skill, ask one concise clarification question instead of broad reasoning.
+Do not inspect repo files. Do not use other skills. Keep the reply short.
+If parsing is ambiguous, ask one short clarification question.
 
-Environment:
-- Database path: {DATABASE_PATH}
-- Default currency: {CURRENCY}
-- Timezone: {TIMEZONE}
-- Location: {LOCATION}
-- Family members: {family}
-- Chat type: {chat_kind}
-- Current time: {now}
-
-Required skill: `{required_skill}`
-Intent note: {intent_note}
-
-Current user message:
-{text.strip()}
+Time: {now}
+Currency: {CURRENCY}
+Intent: {intent_note}
+User message: {text.strip()}
 """
 
 
@@ -689,13 +674,17 @@ async def _run_codex(
     assistant_id: str,
     image_path: Optional[str] = None,
 ) -> str:
-    return await DEFAULT_RESIDENT_AGENT_SERVICE.run(
+    reply = await DEFAULT_RESIDENT_AGENT_SERVICE.run(
         prompt,
         assistant_id=assistant_id,
         user_id=user_id,
         chat_id=chat_id,
         image_path=image_path,
     )
+    cleaned = (reply or "").strip()
+    if cleaned:
+        return cleaned
+    return "我这次没有稳定拿到结果，你再发一次我继续帮你看。"
 
 
 async def agent_handle(text: str, user_id: int, user_name: str, session: Session, assistant_id: str) -> str:

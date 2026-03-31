@@ -3,8 +3,7 @@
 Jobs:
 1. weekly_summary_job      — Sunday 8PM: comprehensive weekly report
 2. proactive_nudge_job     — Fri 6PM: spending check-in & weekend suggestion
-3. budget_alert_job        — Daily 9PM: alert if any budget is >80%
-4. monthly_archive_job     — 1st of month 1AM: archive previous month's data
+3. monthly_archive_job     — 1st of month 1AM: archive previous month's data
 """
 
 import logging
@@ -228,86 +227,6 @@ def _build_proactive_nudge(user_id: int) -> str:
         lines.append(f"\n🧠 提醒：{goal_memories[0]['content']}")
 
     return "\n".join(lines)
-
-
-# ═══════════════════════════════════════════
-#  Daily Budget Alert (every evening)
-# ═══════════════════════════════════════════
-
-async def budget_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Daily check: alert users if any budget is over 80%."""
-    logger.info("Running daily budget alert check")
-
-    recipients = ALLOWED_USER_IDS if ALLOWED_USER_IDS else list(FAMILY_MEMBERS.keys())
-    if not recipients:
-        return
-
-    from app.database import get_connection
-
-    try:
-        alerts = []
-        with get_connection() as conn:
-            budget_rows = conn.execute(
-                "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
-            ).fetchall()
-            tz = ZoneInfo(TIMEZONE)
-            now = datetime.now(tz)
-            current_year = now.year
-            current_month = now.month
-
-        for row in budget_rows:
-            cat = row["category"]
-            limit_val = float(row["monthly_limit"])
-            if cat == "_total":
-                spent = get_month_total(None)  # family total
-                cat_label = "家庭总预算"
-            else:
-                spent = get_category_total(cat, None)
-                cat_label = f"家庭{cat}"
-
-            pct = spent / limit_val * 100 if limit_val > 0 else 0
-
-            alert_level = None
-            alert_text = ""
-            if pct > 100:
-                alert_level = "over"
-                alert_text = f"🔴 {cat_label}已超支！（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）"
-            elif pct >= 90:
-                alert_level = "near_limit"
-                alert_text = f"🟡 {cat_label}即将用完（{spent:.2f}/{limit_val:.2f} {CURRENCY}，{pct:.0f}%）"
-
-            if not alert_level:
-                continue
-
-            with get_connection() as conn:
-                already_sent = conn.execute(
-                    "SELECT 1 FROM budget_alert_events "
-                    "WHERE year = ? AND month = ? AND category = ? AND alert_level = ?",
-                    (current_year, current_month, cat, alert_level),
-                ).fetchone()
-                if already_sent:
-                    continue
-                conn.execute(
-                    "INSERT INTO budget_alert_events (year, month, category, alert_level, sent_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (current_year, current_month, cat, alert_level, now.isoformat()),
-                )
-                conn.commit()
-            alerts.append(alert_text)
-
-        if not alerts:
-            return
-
-        for user_id in recipients:
-            try:
-                name = FAMILY_MEMBERS.get(user_id, str(user_id))
-                msg = f"⚠️ *{name}，家庭预算预警*\n\n" + "\n".join(alerts) + "\n\n注意控制接下来的支出哦！"
-                await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
-                logger.info("Budget alert sent to user %s: %d alerts", user_id, len(alerts))
-            except Exception:
-                logger.exception("Failed to send budget alert to user %s", user_id)
-    except Exception:
-        logger.exception("Failed to compute budget alerts")
 
 
 # ═══════════════════════════════════════════

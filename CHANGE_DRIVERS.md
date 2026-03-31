@@ -70,10 +70,12 @@ Outcome:
 Why it was requested:
 - budgets need both current state and history
 - repeated rent reminders were annoying
+- daily budget reminders were not wanted
 
 Outcome:
 - current budget, budget change history, and alert deduplication were added
 - “already reached budget” categories no longer nag every day
+- the daily budget reminder path was removed, leaving weekly/monthly reporting and Friday nudges
 
 ### Special/project spending
 

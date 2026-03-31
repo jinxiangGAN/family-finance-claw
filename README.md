@@ -25,6 +25,7 @@ For latency-sensitive common turns, the bot now also uses a simple-finance fast 
 - Memory capture with confirmation first, then English storage
 - Memory archive/update lifecycle
 - Weekly and monthly summary jobs
+- Friday proactive weekend spending suggestions
 - Local Codex bridge with database-grounded finance replies
 
 ## Current Architecture
