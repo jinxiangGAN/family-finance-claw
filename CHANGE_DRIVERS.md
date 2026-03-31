@@ -159,6 +159,17 @@ Outcome:
 - then the runtime moved from pure per-turn `exec` toward a resident `codex app-server` process
 - current design now prefers resident `app-server` and falls back to `exec/resume` when necessary
 
+### Runtime portability and lighter thinking
+
+Why it was requested:
+- the owner wanted the option to switch away from Codex in the future, for example to Claude Code
+- the owner also wanted the repo-level Codex thinking effort turned down to `low`
+
+Outcome:
+- the runtime layer was made more provider-facing so the outer service skeleton is less tied to Codex
+- default runtime provider stays `codex` for now
+- Codex runtime invocation now carries a low reasoning-effort default
+
 ### Faster simple finance turns
 
 Why it was requested:

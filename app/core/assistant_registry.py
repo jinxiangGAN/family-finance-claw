@@ -17,12 +17,14 @@ from app.config import (
     CODEX_HOME,
     CODEX_MODEL,
     CODEX_PROFILE,
+    CODEX_REASONING_EFFORT,
     CODEX_SESSION_STORE_PATH,
     CODEX_WORKDIR,
     DATABASE_PATH,
     DEFAULT_ASSISTANT_ID,
     DEFAULT_ASSISTANT_NAME,
     PYTHON_BIN,
+    RUNTIME_PROVIDER,
 )
 
 
@@ -38,6 +40,8 @@ class AssistantConfig:
     session_store_path: str
     codex_model: str = ""
     codex_profile: str = ""
+    runtime_provider: str = "codex"
+    reasoning_effort: str = "low"
     bridge_module: str = "app.bridge_ops"
     soul_file: str = "AGENTS.md"
     aliases: tuple[str, ...] = ()
@@ -82,6 +86,8 @@ class AssistantConfig:
             ),
             codex_model=str(data.get("codex_model") or (base.codex_model if base else "")),
             codex_profile=str(data.get("codex_profile") or (base.codex_profile if base else "")),
+            runtime_provider=str(data.get("runtime_provider") or (base.runtime_provider if base else "codex")),
+            reasoning_effort=str(data.get("reasoning_effort") or (base.reasoning_effort if base else "low")),
             bridge_module=str(data.get("bridge_module") or (base.bridge_module if base else "app.bridge_ops")),
             soul_file=str(data.get("soul_file") or (base.soul_file if base else "AGENTS.md")),
             aliases=tuple(str(item) for item in (data.get("aliases") or (base.aliases if base else ()))),
@@ -137,6 +143,8 @@ def build_default_registry() -> AssistantRegistry:
         session_store_path=CODEX_SESSION_STORE_PATH,
         codex_model=CODEX_MODEL,
         codex_profile=CODEX_PROFILE,
+        runtime_provider=RUNTIME_PROVIDER,
+        reasoning_effort=CODEX_REASONING_EFFORT,
         aliases=("小灰毛", "finance", "family-finance"),
         metadata={
             "domain": "family-finance",

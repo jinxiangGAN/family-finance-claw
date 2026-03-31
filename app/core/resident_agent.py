@@ -11,7 +11,8 @@ from typing import Optional
 
 from app.config import DEFAULT_ASSISTANT_ID
 from app.core.assistant_registry import AssistantRegistry, DEFAULT_ASSISTANT_REGISTRY
-from app.core.codex_session import CodexSessionManager, CompositeCodexRuntime
+from app.core.codex_session import CodexSessionManager
+from app.core.runtime_provider import ProviderRuntimeRouter
 
 
 class ResidentAgentService:
@@ -19,14 +20,14 @@ class ResidentAgentService:
         self,
         registry: Optional[AssistantRegistry] = None,
         session_manager: Optional[CodexSessionManager] = None,
-        runtime: Optional[CompositeCodexRuntime] = None,
+        runtime: Optional[ProviderRuntimeRouter] = None,
     ) -> None:
         self.registry = registry or DEFAULT_ASSISTANT_REGISTRY
         default_assistant = self.registry.get(DEFAULT_ASSISTANT_ID)
         self.session_manager = session_manager or CodexSessionManager(
             session_store_path=default_assistant.session_store_path
         )
-        self.runtime = runtime or CompositeCodexRuntime()
+        self.runtime = runtime or ProviderRuntimeRouter()
 
     async def run(
         self,

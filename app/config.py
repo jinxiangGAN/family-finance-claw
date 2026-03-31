@@ -11,9 +11,11 @@ TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
 # ─── Local Codex bridge ───
 BOT_BACKEND: str = os.getenv("BOT_BACKEND", "codex")
+RUNTIME_PROVIDER: str = os.getenv("RUNTIME_PROVIDER", "codex")
 CODEX_BIN: str = os.getenv("CODEX_BIN", "codex")
 CODEX_MODEL: str = os.getenv("CODEX_MODEL", "")
 CODEX_PROFILE: str = os.getenv("CODEX_PROFILE", "")
+CODEX_REASONING_EFFORT: str = os.getenv("CODEX_REASONING_EFFORT", "low")
 CODEX_HOME: str = os.getenv("CODEX_HOME", os.path.expanduser("~/.codex"))
 CODEX_TIMEOUT_SECONDS: int = int(os.getenv("CODEX_TIMEOUT_SECONDS", "180"))
 CODEX_WORKDIR: str = os.getenv("CODEX_WORKDIR", os.getcwd())

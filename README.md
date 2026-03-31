@@ -86,6 +86,7 @@ The current runtime now supports:
 - stored Codex thread ids per Telegram thread
 - `app-server` first, with `exec/resume` as fallback
 - persistence of chat-to-thread mapping in `data/codex_sessions.json`
+- runtime/provider-facing configuration, so the upper service layer is not permanently locked to Codex
 
 Threading rules are:
 - private chat -> personal thread
@@ -100,6 +101,7 @@ Even though the repo currently runs one assistant, the structure now leaves room
 - multiple repos
 - assistant routing by id / alias
 - per-assistant workspace, bridge, and session store
+- future runtime adapters such as Claude Code, without replacing the whole Telegram/product skeleton
 
 ## Main Modules
 
@@ -121,6 +123,9 @@ Even though the repo currently runs one assistant, the structure now leaves room
 
 - [`app/core/codex_session.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/codex_session.py)
   Codex runtime/session state, resident `app-server`, persistent thread ids, and fallback logic.
+
+- [`app/core/runtime_provider.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/runtime_provider.py)
+  Provider-facing adapter layer so the service can keep the same outer architecture while switching runtime backends later.
 
 - [`app/core/finance_workbench.py`](/Users/jinxiang.gan/Desktop/code/project/family-finance-claw/app/core/finance_workbench.py)
   Fixed action surface for common finance turns such as simple expense recording, recent records, monthly total, budget query, budget update, and delete-by-id.
@@ -225,6 +230,8 @@ CODEX_HOME=/absolute/path/to/codex-home
 CODEX_WORKDIR=/absolute/path/to/family-finance-claw
 DATABASE_PATH=/absolute/path/to/family-finance-claw/data/expenses.db
 CODEX_SESSION_STORE_PATH=/absolute/path/to/family-finance-claw/data/codex_sessions.json
+RUNTIME_PROVIDER=codex
+CODEX_REASONING_EFFORT=low
 DEFAULT_ASSISTANT_ID=family-finance
 DEFAULT_ASSISTANT_NAME=小灰毛
 CODEX_RUNTIME_MODE=app-server

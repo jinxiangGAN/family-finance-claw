@@ -164,6 +164,8 @@ class CodexExecRuntime:
                 config.codex_bin,
                 "exec",
                 "resume",
+                "-c",
+                f'model_reasoning_effort="{config.reasoning_effort}"',
                 "--full-auto",
                 "--skip-git-repo-check",
                 state.persistent_session_id,
@@ -172,6 +174,8 @@ class CodexExecRuntime:
             args = [
                 config.codex_bin,
                 "exec",
+                "-c",
+                f'model_reasoning_effort="{config.reasoning_effort}"',
                 "--full-auto",
                 "--sandbox",
                 "workspace-write",
@@ -277,6 +281,8 @@ class CodexAppServerClient:
             self._proc = await asyncio.create_subprocess_exec(
                 self.config.codex_bin,
                 "app-server",
+                "-c",
+                f'model_reasoning_effort="{self.config.reasoning_effort}"',
                 "--listen",
                 "stdio://",
                 stdin=asyncio.subprocess.PIPE,
