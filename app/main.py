@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from app.config import (
+    ACTION_REGISTRY_SOCKET_PATH,
     BOT_BACKEND,
     CODEX_BIN,
     CODEX_HOME,
@@ -18,6 +19,7 @@ from app.config import (
 )
 from app.database import init_db
 from app.bot.handlers import build_application
+from app.core.action_registry import DEFAULT_ACTION_REGISTRY_SERVER
 
 _log_dir = os.path.dirname(DATABASE_PATH) or "data"
 os.makedirs(_log_dir, exist_ok=True)
@@ -48,6 +50,11 @@ def main() -> None:
         logger.error("Codex binary '%s' not found in PATH.", CODEX_BIN)
         sys.exit(1)
     logger.info("Resolved Codex path: %s", codex_path)
+    curl_path = shutil.which("curl")
+    if not curl_path:
+        logger.warning("curl not found in PATH. Resident action registry fast path may be unavailable.")
+    else:
+        logger.info("Resolved curl path: %s", curl_path)
     try:
         subprocess.run([CODEX_BIN, "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     except Exception:
@@ -65,11 +72,16 @@ def main() -> None:
 
     # Initialize database
     init_db()
+    DEFAULT_ACTION_REGISTRY_SERVER.start()
+    logger.info("Action registry socket: %s", ACTION_REGISTRY_SOCKET_PATH)
 
     # Build and run bot (polling mode)
     logger.info("Starting Family Finance Claw 🦞 (Telegram -> Codex bridge)...")
-    app = build_application()
-    app.run_polling(drop_pending_updates=True)
+    try:
+        app = build_application()
+        app.run_polling(drop_pending_updates=True)
+    finally:
+        DEFAULT_ACTION_REGISTRY_SERVER.stop()
 
 
 if __name__ == "__main__":

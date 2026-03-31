@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.memory import delete_memory, get_memory_manager, get_recent_memories, store_memory, update_memory
 from app.config import (
+    ACTION_REGISTRY_SOCKET_PATH,
     CURRENCY,
     DATABASE_PATH,
     FAMILY_MEMBERS,
@@ -648,21 +649,21 @@ def _build_fast_prompt(
 ) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-    module_name, intent_note = {
-        "record_expense": ("app.core.finance_workbench", "simple expense recording"),
-        "recent_expenses": ("app.core.finance_workbench", "simple recent-records query"),
-        "month_total": ("app.core.finance_workbench", "simple current-month total query"),
-        "budget_query": ("app.core.finance_workbench", "simple budget-status query"),
-        "budget_set": ("app.core.finance_workbench", "simple budget update"),
-        "delete_by_id": ("app.core.finance_workbench", "simple delete-by-id"),
-        "forward_message": ("app.core.family_workbench", "simple family message forwarding"),
+    action_name, intent_note = {
+        "record_expense": ("finance.record_expense", "simple expense recording"),
+        "recent_expenses": ("finance.recent_expenses", "simple recent-records query"),
+        "month_total": ("finance.month_total", "simple current-month total query"),
+        "budget_query": ("finance.budget_query", "simple budget-status query"),
+        "budget_set": ("finance.budget_set", "simple budget update"),
+        "delete_by_id": ("finance.delete_by_id", "simple delete-by-id"),
+        "forward_message": ("family.forward_message", "simple family message forwarding"),
     }[fast_intent]
     return f"""Fast workbench turn for `小灰毛`.
 
 Reply in Simplified Chinese only.
 Use exactly one workbench action: `{fast_intent}`.
 Only run:
-`PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m {module_name} --user-id {user_id} --user-name "{user_name}" --action {fast_intent} --text '<original user text>'`
+`curl --silent --show-error --unix-socket "{ACTION_REGISTRY_SOCKET_PATH}" -X POST http://localhost/run --data-urlencode "action={action_name}" --data-urlencode "user_id={user_id}" --data-urlencode "user_name={user_name}" --data-urlencode "text=<original user text>"`
 
 The workbench already parses the user text and runs the correct action.
 The workbench returns a JSON object with a `reply` field. Use that `reply` as the factual baseline.
