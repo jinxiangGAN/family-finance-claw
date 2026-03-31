@@ -185,6 +185,27 @@ This is an important distinction:
 
 The repo now prefers a resident `codex app-server` runtime and falls back to `exec/resume` only when necessary.
 
+### Step 5.6: Add a simple-finance fast path
+
+Once the resident runtime was in place, the next product insight was that many real household turns are not actually complex:
+
+- `午饭 15`
+- `本月花了多少`
+- `看看最近5笔`
+- `删除 #123`
+- `餐饮预算设为1000`
+
+These are still Codex turns, but they do not need the full general-purpose agent prompt every time.
+
+So the repo added a simple-finance fast path:
+
+- keep Codex in the loop
+- narrow the prompt
+- constrain the tool choice to one expected skill
+- keep the reply short
+
+This was a performance optimization without abandoning the Codex-centric architecture.
+
 ### Step 6: Prepare for multi-assistant orchestration
 
 The final direction was not just “make one finance bot better”.

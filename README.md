@@ -9,6 +9,11 @@ The current system is designed for a 2-person household:
 
 It supports daily expense tracking, budget management, memory confirmation, special-project spending, scheduled summaries, and a Codex-backed agent workflow that can evolve into a multi-assistant orchestration layer later.
 
+For latency-sensitive common turns, the bot now also uses a simple-finance fast path:
+- still handled by Codex
+- but with a much smaller prompt
+- and a single allowed skill/tool path for common expense and budget actions
+
 ## What It Does
 
 - Natural-language expense tracking in Telegram
@@ -146,6 +151,7 @@ Even though the repo currently runs one assistant, the structure now leaves room
 ### Expense handling
 
 - Short commands like `午饭 15` should record directly.
+- Simple finance requests like `午饭 15`, `本月花了多少`, `看看最近5笔`, `删除 #123`, and `餐饮预算设为1000` should prefer the fast path.
 - High-risk writes should confirm first:
   - delete expense
   - change budget

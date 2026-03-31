@@ -157,6 +157,17 @@ Outcome:
 - then the runtime moved from pure per-turn `exec` toward a resident `codex app-server` process
 - current design now prefers resident `app-server` and falls back to `exec/resume` when necessary
 
+### Faster simple finance turns
+
+Why it was requested:
+- after the resident runtime work, the biggest remaining pain was still latency
+- the owner pointed out that many turns are simple and should not need a heavy agent loop
+
+Outcome:
+- a simple-finance fast path was added
+- common turns now use a much smaller Codex prompt
+- the allowed tool path is narrowed to one expected skill for common expense and budget actions
+
 ## Documentation
 
 ### Keep the architectural story reviewable

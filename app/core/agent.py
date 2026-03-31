@@ -91,6 +91,22 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
     "update a memory": ("update_memory", "archive the old memory and create a new replacement version"),
 }
 
+_DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
+_RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
+_MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
+_BUDGET_QUERY_RE = re.compile(r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)|看看预算|查预算)\s*[？?]?\s*$")
+_BUDGET_SET_RE = re.compile(
+    r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算\s*(?:设为|改成|改为|调整为)\s*(\d+(?:\.\d+)?)\s*$"
+)
+_FAST_FINANCE_INTENTS = {
+    "record_expense",
+    "recent_expenses",
+    "month_total",
+    "budget_query",
+    "budget_set",
+    "delete_by_id",
+}
+
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
     key = (user_id, chat_id)
@@ -492,6 +508,25 @@ def _build_action_confirmation(action_label: str, original_text: str) -> str:
         action_label,
         ("relevant skill", "apply the requested write operation"),
     )
+
+
+def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> Optional[str]:
+    stripped = text.strip()
+    if image_path:
+        return None
+    if _RECORD_LIKE_RE.match(stripped):
+        return "record_expense"
+    if _DELETE_BY_ID_RE.match(stripped):
+        return "delete_by_id"
+    if _RECENT_EXPENSES_RE.match(stripped):
+        return "recent_expenses"
+    if _MONTH_TOTAL_RE.match(stripped):
+        return "month_total"
+    if _BUDGET_QUERY_RE.match(stripped):
+        return "budget_query"
+    if _BUDGET_SET_RE.match(stripped):
+        return "budget_set"
+    return None
     return (
         f"我理解你是要执行这个操作：{action_label}。\n"
         f"预计调用：`{function_name}`\n"
@@ -586,6 +621,64 @@ Context:
 
 Current user message:
 {user_block}
+"""
+
+
+def _build_fast_prompt(
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    fast_intent: str,
+) -> str:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    chat_kind = "private chat" if session.is_private else "group chat"
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
+    allowed_skills = {
+        "record_expense": "record_expense",
+        "recent_expenses": "query_recent_expenses",
+        "month_total": "query_monthly_total",
+        "budget_query": "query_budget",
+        "budget_set": "set_budget",
+        "delete_by_id": "delete_expense_by_id",
+    }
+    required_skill = allowed_skills[fast_intent]
+    intent_note = {
+        "record_expense": "This is a simple expense-recording turn. Prefer one direct skill call and one short confirmation reply.",
+        "recent_expenses": "This is a simple recent-records query. Prefer one direct skill call and list the results briefly.",
+        "month_total": "This is a simple current-month total query. Prefer one direct skill call and one short grounded answer.",
+        "budget_query": "This is a simple budget-status query. Prefer one direct skill call and one short grounded answer.",
+        "budget_set": "This is a simple budget-update turn. Prefer one direct skill call and one short grounded answer.",
+        "delete_by_id": "This is a simple delete-by-id turn. Prefer one direct skill call and one short grounded answer.",
+    }[fast_intent]
+    return f"""You are `小灰毛`, handling a SIMPLE finance turn for a Telegram family finance bot.
+
+This is the fast path. Keep the turn narrow, grounded, and short.
+
+Rules:
+1. Use exactly one database-grounded skill unless the message is genuinely impossible to parse.
+2. Only use this bridge command form:
+   `PYTHONPYCACHEPREFIX=/tmp/pycache {PYTHON_BIN} -m app.bridge_ops skill --user-id {user_id} --user-name "{user_name}" --name {required_skill} --params-json '<json>'`
+3. Do not inspect repo files, do not modify code, do not use ad-hoc SQL, and do not use other skills.
+4. Output only the final Telegram reply in Simplified Chinese.
+5. Keep the reply brief and practical.
+6. If the user message is too ambiguous for this one skill, ask one concise clarification question instead of broad reasoning.
+
+Environment:
+- Database path: {DATABASE_PATH}
+- Default currency: {CURRENCY}
+- Timezone: {TIMEZONE}
+- Location: {LOCATION}
+- Family members: {family}
+- Chat type: {chat_kind}
+- Current time: {now}
+
+Required skill: `{required_skill}`
+Intent note: {intent_note}
+
+Current user message:
+{text.strip()}
 """
 
 
@@ -691,7 +784,17 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
         reply = _build_action_confirmation(write_action, text)
         return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
-    prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
+    fast_intent = _detect_fast_finance_intent(text)
+    if fast_intent in _FAST_FINANCE_INTENTS:
+        prompt = _build_fast_prompt(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            fast_intent=fast_intent,
+        )
+    else:
+        prompt = _build_prompt(text=text, user_id=user_id, user_name=user_name, session=session)
     reply = await _run_codex(prompt, user_id=thread_owner_id, chat_id=session.chat_id, assistant_id=assistant_id)
     return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
