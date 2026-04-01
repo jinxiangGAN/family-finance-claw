@@ -180,7 +180,11 @@ _EXCHANGE_RATE_HINTS = (
 )
 _ACTION_TAG_RE = re.compile(r"<ACTION>\s*(\{.*?\})\s*</ACTION>", re.DOTALL)
 _FINAL_TAG_RE = re.compile(r"<FINAL>\s*(.*?)\s*</FINAL>", re.DOTALL)
-_MAX_FULL_PATH_ACTION_STEPS = 6
+_DEFAULT_FULL_PATH_ACTION_STEPS = 8
+_WRITE_FULL_PATH_ACTION_STEPS = 10
+_IMAGE_FULL_PATH_ACTION_STEPS = 10
+_MEMORY_FULL_PATH_ACTION_STEPS = 9
+_BUDGET_FULL_PATH_ACTION_STEPS = 12
 
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
@@ -793,6 +797,7 @@ def _build_resident_full_path_prompt(
     caption: str = "",
     last_action_result: Optional[dict[str, Any]] = None,
     step_index: int = 0,
+    step_limit: int = _DEFAULT_FULL_PATH_ACTION_STEPS,
 ) -> str:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
@@ -870,7 +875,7 @@ Rules:
 9. Keep the final reply short, warm, and grounded. Prefer `小鸡毛` / `小白` when it sounds natural.
 10. If details are ambiguous for a safe write, ask one concise clarification question inside `<FINAL>`.
 10a. For a simple expense record, if no different owner is explicitly named, default the owner to the current sender instead of asking them to restate that it was their spending.
-11. This is resident full-path step {step_index + 1} of {_MAX_FULL_PATH_ACTION_STEPS}. Avoid unnecessary loops.
+11. This is resident full-path step {step_index + 1} of {step_limit}. Avoid unnecessary loops.
 12. Emojis are welcome when they make the reply feel warm and lively. The paw-print emoji is a signature touch for `小灰毛`, but it should mainly appear in playful or lively endings rather than in every reply.
 13. In factual finance replies, keep emoji usage light and readable.
 
@@ -896,6 +901,19 @@ Context:
 Current user message:
 {text.strip() or "The user sent an image."}
 """
+
+
+def _determine_full_path_step_limit(*, text: str, image_path: Optional[str]) -> int:
+    stripped = text.strip()
+    if image_path:
+        return _IMAGE_FULL_PATH_ACTION_STEPS
+    if _looks_like_budget_write(stripped) or "预算" in stripped:
+        return _BUDGET_FULL_PATH_ACTION_STEPS
+    if _looks_like_memory_candidate(stripped) or _ARCHIVE_MEMORY_RE.match(stripped) or _UPDATE_MEMORY_RE.match(stripped):
+        return _MEMORY_FULL_PATH_ACTION_STEPS
+    if _detect_write_action(stripped) or _looks_like_record_expense(stripped):
+        return _WRITE_FULL_PATH_ACTION_STEPS
+    return _DEFAULT_FULL_PATH_ACTION_STEPS
 
 
 async def _execute_resident_action_request(
@@ -950,7 +968,8 @@ async def _run_codex_resident_loop(
 ) -> str:
     last_action_result: Optional[dict[str, Any]] = None
     looks_like_plain_expense = bool(not image_path and _looks_like_record_expense(text))
-    for step_index in range(_MAX_FULL_PATH_ACTION_STEPS):
+    step_limit = _determine_full_path_step_limit(text=text, image_path=image_path)
+    for step_index in range(step_limit):
         prompt = _build_resident_full_path_prompt(
             text=text,
             user_id=user_id,
@@ -960,6 +979,7 @@ async def _run_codex_resident_loop(
             caption=caption,
             last_action_result=last_action_result,
             step_index=step_index,
+            step_limit=step_limit,
         )
         reply = await _run_codex(
             prompt,
@@ -995,7 +1015,7 @@ async def _run_codex_resident_loop(
         user_id=user_id,
         chat_id=session.chat_id,
         looks_like_plain_expense=looks_like_plain_expense,
-        steps=_MAX_FULL_PATH_ACTION_STEPS,
+        steps=step_limit,
     )
     return "这次链路绕得有点多，小灰毛先停在这里。你再发一次，我会继续接住。"
 
