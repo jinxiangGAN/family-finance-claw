@@ -36,6 +36,103 @@ def _md(text: object) -> str:
     return escape_markdown(str(text), version=1)
 
 
+def _load_family_budget_items() -> tuple[list[dict], list[dict]]:
+    with get_connection() as conn:
+        budget_rows = conn.execute(
+            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0 ORDER BY category",
+        ).fetchall()
+        group_rows = conn.execute(
+            "SELECT id, name, monthly_limit FROM budget_groups WHERE user_id = 0 ORDER BY name",
+        ).fetchall()
+
+        budget_groups: list[dict] = []
+        for row in group_rows:
+            category_rows = conn.execute(
+                "SELECT category FROM budget_group_categories WHERE group_id = ? ORDER BY category",
+                (row["id"],),
+            ).fetchall()
+            budget_groups.append(
+                {
+                    "name": str(row["name"]),
+                    "monthly_limit": float(row["monthly_limit"]),
+                    "categories": [str(item["category"]) for item in category_rows],
+                }
+            )
+
+    budgets = [
+        {
+            "category": str(row["category"]),
+            "monthly_limit": float(row["monthly_limit"]),
+        }
+        for row in budget_rows
+    ]
+    return budgets, budget_groups
+
+
+def _build_live_budget_lines() -> list[str]:
+    budgets, budget_groups = _load_family_budget_items()
+    if not budgets and not budget_groups:
+        return []
+
+    lines = ["📋 *家庭预算情况*"]
+    for item in budgets:
+        category = item["category"]
+        limit_val = float(item["monthly_limit"])
+        if category == "_total":
+            spent = get_month_total(None)
+            label = "家庭总计"
+        else:
+            spent = get_category_total(category, None)
+            label = f"家庭{category}"
+        pct = spent / limit_val * 100 if limit_val > 0 else 0
+        status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
+        lines.append(f"  {status} {label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
+
+    for item in budget_groups:
+        categories = item["categories"]
+        limit_val = float(item["monthly_limit"])
+        spent = sum(get_category_total(category, None) for category in categories)
+        pct = spent / limit_val * 100 if limit_val > 0 else 0
+        status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
+        label = f"{item['name']}（{' / '.join(categories)}）"
+        lines.append(f"  {status} {label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
+    return lines
+
+
+def _build_archived_budget_lines(year: int, month: int) -> list[str]:
+    budgets, budget_groups = _load_family_budget_items()
+    if not budgets and not budget_groups:
+        return []
+
+    family_rows = get_monthly_archive(year, month, user_id=None)
+    totals_by_category = {str(row["category"]): float(row["total"]) for row in family_rows}
+    family_total = sum(totals_by_category.values())
+
+    lines = ["📋 *预算对比*"]
+    for item in budgets:
+        category = item["category"]
+        limit_val = float(item["monthly_limit"])
+        if category == "_total":
+            spent = family_total
+            label = "家庭总计"
+        else:
+            spent = float(totals_by_category.get(category, 0))
+            label = f"家庭{category}"
+        pct = spent / limit_val * 100 if limit_val > 0 else 0
+        status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
+        lines.append(f"  {status} {label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
+
+    for item in budget_groups:
+        categories = item["categories"]
+        limit_val = float(item["monthly_limit"])
+        spent = sum(float(totals_by_category.get(category, 0)) for category in categories)
+        pct = spent / limit_val * 100 if limit_val > 0 else 0
+        status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
+        label = f"{item['name']}（{' / '.join(categories)}）"
+        lines.append(f"  {status} {label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
+    return lines
+
+
 # ═══════════════════════════════════════════
 #  Weekly Summary (Sunday evening)
 # ═══════════════════════════════════════════
@@ -96,26 +193,10 @@ def _build_weekly_report(user_id: int) -> str:
     # Family total
     lines.append(f"\n👨‍👩‍👧 *家庭最近7天合计*：{family_total:.2f} {CURRENCY}")
 
-    # Budget check (family-shared: user_id=0)
-    with get_connection() as conn:
-        budget_rows = conn.execute(
-            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
-        ).fetchall()
-
-    if budget_rows:
-        lines.append("\n📋 *家庭预算情况*")
-        for row in budget_rows:
-            cat = row["category"]
-            limit_val = float(row["monthly_limit"])
-            if cat == "_total":
-                spent = get_month_total(None)  # family total
-                cat_label = "家庭总计"
-            else:
-                spent = get_category_total(cat, None)
-                cat_label = f"家庭{cat}"
-            pct = spent / limit_val * 100 if limit_val > 0 else 0
-            status = "🔴" if pct > 100 else "🟡" if pct > 80 else "🟢"
-            lines.append(f"  {status} {cat_label}：{spent:.2f}/{limit_val:.2f} {CURRENCY}（{pct:.0f}%）")
+    budget_lines = _build_live_budget_lines()
+    if budget_lines:
+        lines.append("")
+        lines.extend(budget_lines)
 
     # Include relevant memories
     memories = get_recent_memories(user_id, limit=3)
@@ -174,35 +255,43 @@ def _build_proactive_nudge(user_id: int) -> str:
     my_summary = get_last_n_days_summary(7, [user_id])
     my_total = sum(item["total"] for item in my_summary)
 
-    # Check budget status (family-shared: user_id=0)
-    with get_connection() as conn:
-        budget_rows = conn.execute(
-            "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
-        ).fetchall()
-
     budget_insights = []
     has_surplus = False
     has_pressure = False
+    budgets, budget_groups = _load_family_budget_items()
 
-    for row in budget_rows:
-        cat = row["category"]
-        limit_val = float(row["monthly_limit"])
-        if cat == "_total":
-            spent = get_month_total(None)  # family total
-            cat_label = "家庭总预算"
+    for item in budgets:
+        category = item["category"]
+        limit_val = float(item["monthly_limit"])
+        if category == "_total":
+            spent = get_month_total(None)
+            label = "家庭总预算"
         else:
-            spent = get_category_total(cat, None)
-            cat_label = f"家庭{cat}"
+            spent = get_category_total(category, None)
+            label = f"家庭{category}"
 
         pct = spent / limit_val * 100 if limit_val > 0 else 0
         remaining = limit_val - spent
-
         if pct < 50:
             has_surplus = True
-            budget_insights.append(f"{cat_label}还有 {remaining:.0f} {CURRENCY} 的余量")
+            budget_insights.append(f"{label}还有 {remaining:.0f} {CURRENCY} 的余量")
         elif pct > 80:
             has_pressure = True
-            budget_insights.append(f"{cat_label}已用 {pct:.0f}%，注意控制")
+            budget_insights.append(f"{label}已用 {pct:.0f}%，注意控制")
+
+    for item in budget_groups:
+        categories = item["categories"]
+        limit_val = float(item["monthly_limit"])
+        spent = sum(get_category_total(category, None) for category in categories)
+        pct = spent / limit_val * 100 if limit_val > 0 else 0
+        remaining = limit_val - spent
+        label = f"{item['name']}（{' / '.join(categories)}）"
+        if pct < 50:
+            has_surplus = True
+            budget_insights.append(f"{label}还有 {remaining:.0f} {CURRENCY} 的余量")
+        elif pct > 80:
+            has_pressure = True
+            budget_insights.append(f"{label}已用 {pct:.0f}%，注意控制")
 
     # Check memory for goals/decisions
     memories = get_recent_memories(user_id, limit=5)
@@ -363,6 +452,11 @@ def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_
                 f"  {status} {goal_label}：{float(item['spent']):.2f}/{float(item['target_amount']):.2f} {CURRENCY}"
             )
 
+    budget_lines = _build_archived_budget_lines(year, month)
+    if budget_lines:
+        lines.append("")
+        lines.extend(budget_lines)
+
     lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
     lines.append("现在你可以直接问我：上个月花了多少、上个月餐饮花了多少。")
     return {
@@ -406,6 +500,11 @@ def _build_family_monthly_report_payload(year: int, month: int, archived_count: 
             lines.append(
                 f"  {status} {goal_label}：{float(item['spent']):.2f}/{float(item['target_amount']):.2f} {CURRENCY}"
             )
+
+    budget_lines = _build_archived_budget_lines(year, month)
+    if budget_lines:
+        lines.append("")
+        lines.extend(budget_lines)
 
     lines.append(f"\n已归档 {archived_count} 条月度汇总记录。")
     return {
