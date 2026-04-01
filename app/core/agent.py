@@ -180,7 +180,7 @@ _EXCHANGE_RATE_HINTS = (
 )
 _ACTION_TAG_RE = re.compile(r"<ACTION>\s*(\{.*?\})\s*</ACTION>", re.DOTALL)
 _FINAL_TAG_RE = re.compile(r"<FINAL>\s*(.*?)\s*</FINAL>", re.DOTALL)
-_MAX_FULL_PATH_ACTION_STEPS = 4
+_MAX_FULL_PATH_ACTION_STEPS = 6
 
 
 def _remember_turn(user_id: int, chat_id: int, role: str, content: str) -> None:
@@ -806,6 +806,7 @@ def _build_resident_full_path_prompt(
     )
     family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
     chat_kind = "private chat" if session.is_private else "group chat"
+    is_plain_expense_turn = bool(not image_path and _looks_like_record_expense(text))
 
     image_hint = ""
     if image_path and step_index == 0:
@@ -821,6 +822,17 @@ def _build_resident_full_path_prompt(
             "\nPrevious resident action result (JSON):\n"
             f"{_format_action_result(last_action_result)}\n"
             "Use it to choose the next action or finish with the final reply.\n"
+        )
+
+    expense_hint = ""
+    if is_plain_expense_turn:
+        expense_hint = (
+            "\nThis message looks like a plain expense record.\n"
+            "For a plain expense record:\n"
+            "- do not call `bridge.snapshot` unless the owner/category is truly ambiguous\n"
+            "- prefer issuing exactly one `bridge.skill` call with `record_expense`\n"
+            "- after the action result comes back, finish immediately with `<FINAL>`\n"
+            "- do not loop through extra analysis when one expense record is enough\n"
         )
 
     return f"""You are `小灰毛`, the resident Codex brain behind a Telegram family finance bot.
@@ -878,6 +890,7 @@ Context:
 - Recent conversation:
 {history}
 {image_hint}
+{expense_hint}
 {action_result_block}
 
 Current user message:
@@ -936,6 +949,7 @@ async def _run_codex_resident_loop(
     caption: str = "",
 ) -> str:
     last_action_result: Optional[dict[str, Any]] = None
+    looks_like_plain_expense = bool(not image_path and _looks_like_record_expense(text))
     for step_index in range(_MAX_FULL_PATH_ACTION_STEPS):
         prompt = _build_resident_full_path_prompt(
             text=text,
@@ -974,6 +988,15 @@ async def _run_codex_resident_loop(
         final_reply = _extract_final_reply(reply)
         if final_reply:
             return final_reply
+    log_event(
+        logger,
+        "agent.full_path_exhausted",
+        assistant_id=assistant_id,
+        user_id=user_id,
+        chat_id=session.chat_id,
+        looks_like_plain_expense=looks_like_plain_expense,
+        steps=_MAX_FULL_PATH_ACTION_STEPS,
+    )
     return "这次链路绕得有点多，小灰毛先停在这里。你再发一次，我会继续接住。"
 
 
