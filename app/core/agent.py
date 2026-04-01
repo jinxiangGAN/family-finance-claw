@@ -116,9 +116,11 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
 
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
-_MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
+_MONTH_TOTAL_RE = re.compile(
+    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:这个月|本月)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:总共)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"
+)
 _TODAY_TOTAL_RE = re.compile(
-    r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$"
+    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今日|今天)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"
 )
 _DETAIL_QUERY_RE = re.compile(
     r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今天|今日|本月|这个月|最近)?(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
@@ -685,6 +687,28 @@ def _rewrite_scope_followup(text: str, history: list[dict[str, str]]) -> str:
                 return "查看今天全家的花费"
             if _MONTH_TOTAL_RE.match(previous):
                 return "查看本月全家的花费"
+    if any(token in stripped for token in ("只看小白", "只查小白", "只要小白", "不要全家，只看小白", "不要全家只看小白")):
+        for item in reversed(history):
+            if item.get("role") != "user":
+                continue
+            previous = str(item.get("content") or "").strip()
+            if _TODAY_TOTAL_RE.match(previous):
+                return "查看小白今天花费"
+            if _MONTH_TOTAL_RE.match(previous):
+                return "查看小白本月花费"
+            if _DETAIL_QUERY_RE.match(previous):
+                return "查看小白的花费明细"
+    if any(token in stripped for token in ("只看小鸡毛", "只查小鸡毛", "只要小鸡毛", "不要全家，只看小鸡毛", "不要全家只看小鸡毛")):
+        for item in reversed(history):
+            if item.get("role") != "user":
+                continue
+            previous = str(item.get("content") or "").strip()
+            if _TODAY_TOTAL_RE.match(previous):
+                return "查看小鸡毛今天花费"
+            if _MONTH_TOTAL_RE.match(previous):
+                return "查看小鸡毛本月花费"
+            if _DETAIL_QUERY_RE.match(previous):
+                return "查看小鸡毛的花费明细"
     return stripped
 
 
