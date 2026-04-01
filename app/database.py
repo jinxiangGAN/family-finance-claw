@@ -57,6 +57,38 @@ CREATE_TABLES_SQL = [
     );
     """,
     """
+    CREATE TABLE IF NOT EXISTS budget_groups (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL,
+        name          TEXT    NOT NULL,
+        monthly_limit REAL    NOT NULL,
+        updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, name)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_group_categories (
+        group_id   INTEGER NOT NULL,
+        category   TEXT    NOT NULL,
+        PRIMARY KEY (group_id, category)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS budget_group_changes (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        budget_user_id    INTEGER NOT NULL,
+        group_name        TEXT    NOT NULL,
+        old_limit         REAL,
+        new_limit         REAL    NOT NULL,
+        old_categories    TEXT    NOT NULL DEFAULT '',
+        new_categories    TEXT    NOT NULL DEFAULT '',
+        changed_by_id     INTEGER NOT NULL,
+        changed_by_name   TEXT    NOT NULL DEFAULT '',
+        note              TEXT    NOT NULL DEFAULT '',
+        created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    """,
+    """
     CREATE TABLE IF NOT EXISTS budget_alert_events (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         year        INTEGER NOT NULL,
@@ -241,6 +273,10 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_budgets_user_id     ON budgets(user_id);",
     "CREATE INDEX IF NOT EXISTS idx_budget_changes_budget_user_id ON budget_changes(budget_user_id);",
     "CREATE INDEX IF NOT EXISTS idx_budget_changes_created_at ON budget_changes(created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_groups_user_id ON budget_groups(user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_group_categories_group_id ON budget_group_categories(group_id);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_group_changes_budget_user_id ON budget_group_changes(budget_user_id);",
+    "CREATE INDEX IF NOT EXISTS idx_budget_group_changes_created_at ON budget_group_changes(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_budget_alert_events_ym ON budget_alert_events(year, month);",
     "CREATE INDEX IF NOT EXISTS idx_api_usage_created   ON api_usage(created_at);",
     "CREATE INDEX IF NOT EXISTS idx_events_user_id      ON events(user_id);",

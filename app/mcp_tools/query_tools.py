@@ -129,15 +129,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "set_budget",
-            "description": "设置家庭共享月度预算上限。预算对全家生效，支出按全家合计计算。category 为 '_total' 表示家庭总预算。",
+            "description": "设置家庭共享月度预算。既支持单分类预算，也支持多个分类共用一个组合预算。预算对全家生效，支出按全家合计计算。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "预算分类。'_total' 表示家庭总预算，其他如 '餐饮'、'交通' 等"},
+                    "category": {"type": "string", "description": "单分类预算时填写。'_total' 表示家庭总预算，其他如 '餐饮'、'交通' 等"},
+                    "categories": {
+                        "type": "array",
+                        "description": "组合预算时填写多个分类，例如 ['餐饮','交通','超市']",
+                        "items": {"type": "string", "enum": CATEGORIES},
+                    },
+                    "budget_name": {"type": "string", "description": "可选：组合预算名称，例如 '三项日常预算'"},
                     "amount": {"type": "number", "description": "每月预算金额"},
                     "note": {"type": "string", "description": "可选：这次调整预算的原因或备注"},
                 },
-                "required": ["category", "amount"],
+                "required": ["amount"],
             },
         },
     },
@@ -194,6 +200,7 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "category": {"type": "string", "description": "可选：只查询某个预算分类，'_total' 表示总预算"},
+                    "budget_name": {"type": "string", "description": "可选：只查询某个组合预算名称"},
                     "limit": {"type": "integer", "description": "最多返回多少条，默认10，最大30"},
                 },
             },

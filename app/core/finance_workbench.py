@@ -247,12 +247,18 @@ def _render_today_total(result: dict[str, Any]) -> str:
 
 def _render_budget_query(result: dict[str, Any]) -> str:
     budgets = result.get("budgets") or []
-    if not budgets:
+    budget_groups = result.get("budget_groups") or []
+    if not budgets and not budget_groups:
         return str(result.get("message") or "目前还没有设置预算。")
     lines = ["当前预算："]
     for item in budgets[:8]:
         lines.append(
             f"{item['category']} {float(item['spent']):.2f}/{float(item['monthly_limit']):.2f} {CURRENCY}"
+        )
+    for item in budget_groups[:5]:
+        categories = " / ".join(item.get("categories") or [])
+        lines.append(
+            f"{item['name']}（{categories}） {float(item['spent']):.2f}/{float(item['monthly_limit']):.2f} {CURRENCY}"
         )
     return "\n".join(lines)
 

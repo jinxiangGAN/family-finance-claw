@@ -211,9 +211,18 @@ def _looks_like_record_expense(text: str) -> bool:
         return False
     if "?" in normalized or "？" in normalized:
         return False
-    if "预算" in normalized and _BUDGET_SET_RE.match(normalized):
+    if _looks_like_budget_write(normalized):
         return False
     return bool(_RECORD_LIKE_RE.match(normalized))
+
+
+def _looks_like_budget_write(text: str) -> bool:
+    stripped = text.strip()
+    if "预算" not in stripped:
+        return False
+    if _BUDGET_QUERY_RE.match(stripped):
+        return False
+    return bool(re.search(r"\d+(?:\.\d+)?", stripped))
 
 
 def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
@@ -367,7 +376,7 @@ def _detect_write_action(text: str, image_path: Optional[str] = None) -> Optiona
     stripped = text.strip()
     if not stripped:
         return None
-    if _BUDGET_SET_RE.match(stripped):
+    if _looks_like_budget_write(stripped):
         return "update a budget"
     if _ARCHIVE_MEMORY_RE.match(stripped):
         return "archive a memory"
@@ -807,6 +816,7 @@ You have exactly two output modes and must choose one:
 <ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"set_budget","params":{{"categories":["餐饮","交通","超市"],"budget_name":"三项日常预算","amount":2000}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"set_recurring_rule","params":{{"name":"房租","category":"房租","amount":4500,"due_day":1,"shared":true}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_period_comparison","params":{{"scope":"family"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_balance_status","params":{{"event_tag":"日本旅行"}}}}</ACTION>
@@ -823,6 +833,7 @@ Rules:
 3. Use one resident action at a time. After receiving an action result, either issue the next action or finish.
 4. Use `bridge.snapshot` when you need recent expenses, recent memories, or profile context from the database.
 5. Use `bridge.skill` for finance/business actions such as query, budget, event, summary, recurring bills, balances, anomalies, goals, and expense operations.
+5a. If the user wants one shared budget across multiple categories, call `set_budget` with a `categories` list and optional `budget_name` instead of recording an expense.
 6. Use `bridge.store_memory` only after the user has already confirmed the memory should be saved. Memory content must be concise English.
 7. If the user is only chatting, you may reply directly with `<FINAL>` and no action.
 8. Final replies must be in Simplified Chinese only.

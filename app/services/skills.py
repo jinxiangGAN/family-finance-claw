@@ -5,6 +5,7 @@ The TOOL_DEFINITIONS list provides the function-calling schema for the LLM.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -363,8 +364,83 @@ def skill_set_budget(user_id: int, user_name: str, params: dict) -> dict:
     category = params.get("category", "_total")
     amount = float(params.get("amount", 0))
     note = params.get("note", "").strip()
+    raw_categories = params.get("categories") or []
+    budget_name = str(params.get("budget_name") or params.get("name") or "").strip()
     if amount <= 0:
         return {"success": False, "message": "预算金额必须大于0"}
+
+    categories = _normalize_budget_categories(raw_categories)
+    if categories:
+        if len(categories) < 2:
+            category = categories[0]
+            categories = []
+        else:
+            group_name = budget_name or " + ".join(categories)
+            tz = ZoneInfo(TIMEZONE)
+            now = datetime.now(tz)
+            with get_connection() as conn:
+                existing = conn.execute(
+                    "SELECT id, monthly_limit FROM budget_groups WHERE user_id = 0 AND name = ?",
+                    (group_name,),
+                ).fetchone()
+                old_limit = float(existing["monthly_limit"]) if existing else None
+                if existing:
+                    group_id = int(existing["id"])
+                    conn.execute(
+                        "UPDATE budget_groups SET monthly_limit = ?, updated_at = ? WHERE id = ?",
+                        (amount, now.isoformat(), group_id),
+                    )
+                    old_categories_rows = conn.execute(
+                        "SELECT category FROM budget_group_categories WHERE group_id = ? ORDER BY category",
+                        (group_id,),
+                    ).fetchall()
+                    old_categories = [str(row["category"]) for row in old_categories_rows]
+                    conn.execute("DELETE FROM budget_group_categories WHERE group_id = ?", (group_id,))
+                else:
+                    cursor = conn.execute(
+                        "INSERT INTO budget_groups (user_id, name, monthly_limit, updated_at) VALUES (0, ?, ?, ?)",
+                        (group_name, amount, now.isoformat()),
+                    )
+                    group_id = int(cursor.lastrowid)
+                    old_categories = []
+                conn.executemany(
+                    "INSERT INTO budget_group_categories (group_id, category) VALUES (?, ?)",
+                    [(group_id, cat) for cat in categories],
+                )
+                conn.execute(
+                    "INSERT INTO budget_group_changes "
+                    "(budget_user_id, group_name, old_limit, new_limit, old_categories, new_categories, changed_by_id, changed_by_name, note, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        0,
+                        group_name,
+                        old_limit,
+                        amount,
+                        ",".join(old_categories),
+                        ",".join(categories),
+                        user_id,
+                        user_name,
+                        note,
+                        now.isoformat(),
+                    ),
+                )
+                conn.commit()
+
+            cats_label = " / ".join(categories)
+            if old_limit is None:
+                change_summary = f"新建组合预算：{amount:.2f} {CURRENCY}/月"
+            else:
+                change_summary = f"由 {old_limit:.2f} 调整为 {amount:.2f} {CURRENCY}/月"
+            return {
+                "success": True,
+                "message": f"已设置家庭组合预算“{group_name}”：{cats_label} 共用 {change_summary}",
+                "budget_name": group_name,
+                "categories": categories,
+                "monthly_limit": amount,
+                "old_monthly_limit": old_limit,
+                "changed_by": user_name,
+                "currency": CURRENCY,
+            }
 
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
@@ -415,13 +491,21 @@ def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
         rows = conn.execute(
             "SELECT category, monthly_limit FROM budgets WHERE user_id = 0",
         ).fetchall()
+        group_rows = conn.execute(
+            "SELECT id, name, monthly_limit FROM budget_groups WHERE user_id = 0 ORDER BY name",
+        ).fetchall()
         change_rows = conn.execute(
             "SELECT category, old_limit, new_limit, changed_by_name, note, created_at "
             "FROM budget_changes WHERE budget_user_id = 0 "
             "ORDER BY datetime(created_at) DESC, id DESC LIMIT 5",
         ).fetchall()
+        group_change_rows = conn.execute(
+            "SELECT group_name, old_limit, new_limit, old_categories, new_categories, changed_by_name, note, created_at "
+            "FROM budget_group_changes WHERE budget_user_id = 0 "
+            "ORDER BY datetime(created_at) DESC, id DESC LIMIT 5",
+        ).fetchall()
 
-    if not rows:
+    if not rows and not group_rows:
         return {"success": True, "budgets": [], "message": "尚未设置任何预算"}
 
     # Family-wide spending (None = all users)
@@ -444,8 +528,31 @@ def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
             "over_budget": remaining < 0,
         })
 
+    budget_groups = []
+    with get_connection() as conn:
+        for row in group_rows:
+            categories_rows = conn.execute(
+                "SELECT category FROM budget_group_categories WHERE group_id = ? ORDER BY category",
+                (row["id"],),
+            ).fetchall()
+            categories = [str(item["category"]) for item in categories_rows]
+            spent = sum(get_category_total(category, None) for category in categories)
+            limit_val = float(row["monthly_limit"])
+            remaining = limit_val - spent
+            budget_groups.append(
+                {
+                    "name": str(row["name"]),
+                    "categories": categories,
+                    "monthly_limit": limit_val,
+                    "spent": spent,
+                    "remaining": remaining,
+                    "over_budget": remaining < 0,
+                }
+            )
+
     recent_changes = [
         {
+            "kind": "category",
             "category": "家庭总预算" if row["category"] == "_total" else f"家庭{row['category']}预算",
             "old_limit": float(row["old_limit"]) if row["old_limit"] is not None else None,
             "new_limit": float(row["new_limit"]),
@@ -454,11 +561,27 @@ def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
             "created_at": row["created_at"],
         }
         for row in change_rows
+    ] + [
+        {
+            "kind": "group",
+            "category": f"家庭组合预算 {row['group_name']}",
+            "group_name": row["group_name"],
+            "old_limit": float(row["old_limit"]) if row["old_limit"] is not None else None,
+            "new_limit": float(row["new_limit"]),
+            "old_categories": [item for item in str(row["old_categories"]).split(",") if item],
+            "new_categories": [item for item in str(row["new_categories"]).split(",") if item],
+            "changed_by_name": row["changed_by_name"],
+            "note": row["note"],
+            "created_at": row["created_at"],
+        }
+        for row in group_change_rows
     ]
+    recent_changes.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     return {
         "success": True,
         "budgets": budgets,
+        "budget_groups": budget_groups,
         "recent_changes": recent_changes,
         "currency": CURRENCY,
     }
@@ -468,6 +591,7 @@ def skill_query_budget_changes(user_id: int, user_name: str, params: dict) -> di
     """Query recent family budget changes."""
     limit = min(max(int(params.get("limit", 10)), 1), 30)
     category = params.get("category", "").strip()
+    budget_name = str(params.get("budget_name", "")).strip()
 
     sql = (
         "SELECT category, old_limit, new_limit, changed_by_id, changed_by_name, note, created_at "
@@ -482,9 +606,21 @@ def skill_query_budget_changes(user_id: int, user_name: str, params: dict) -> di
 
     with get_connection() as conn:
         rows = conn.execute(sql, sql_params).fetchall()
+        group_sql = (
+            "SELECT group_name, old_limit, new_limit, old_categories, new_categories, changed_by_id, changed_by_name, note, created_at "
+            "FROM budget_group_changes WHERE budget_user_id = 0"
+        )
+        group_params: list[Any] = []
+        if budget_name:
+            group_sql += " AND group_name = ?"
+            group_params.append(budget_name)
+        group_sql += " ORDER BY datetime(created_at) DESC, id DESC LIMIT ?"
+        group_params.append(limit)
+        group_rows = conn.execute(group_sql, group_params).fetchall()
 
     changes = [
         {
+            "kind": "category",
             "category": row["category"],
             "category_label": "家庭总预算" if row["category"] == "_total" else f"家庭{row['category']}预算",
             "old_limit": float(row["old_limit"]) if row["old_limit"] is not None else None,
@@ -495,7 +631,24 @@ def skill_query_budget_changes(user_id: int, user_name: str, params: dict) -> di
             "created_at": row["created_at"],
         }
         for row in rows
+    ] + [
+        {
+            "kind": "group",
+            "category": row["group_name"],
+            "category_label": f"家庭组合预算 {row['group_name']}",
+            "old_limit": float(row["old_limit"]) if row["old_limit"] is not None else None,
+            "new_limit": float(row["new_limit"]),
+            "old_categories": [item for item in str(row["old_categories"]).split(",") if item],
+            "new_categories": [item for item in str(row["new_categories"]).split(",") if item],
+            "changed_by_id": row["changed_by_id"],
+            "changed_by_name": row["changed_by_name"],
+            "note": row["note"],
+            "created_at": row["created_at"],
+        }
+        for row in group_rows
     ]
+    changes.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    changes = changes[:limit]
 
     return {
         "success": True,
@@ -1094,14 +1247,21 @@ TOOL_DEFINITIONS: list[dict] = [
         "type": "function",
         "function": {
             "name": "set_budget",
-            "description": "设置当前用户的每月预算上限（个人维度）。category 为 '_total' 表示个人总预算。",
+            "description": "设置家庭共享月度预算。支持单分类预算、家庭总预算，以及多个分类共用一个组合预算。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "预算分类，'_total' 表示个人总预算"},
+                    "category": {"type": "string", "description": "单分类预算时填写，'_total' 表示家庭总预算"},
+                    "categories": {
+                        "type": "array",
+                        "description": "组合预算时填写多个分类，例如 ['餐饮','交通','超市']",
+                        "items": {"type": "string", "enum": CATEGORIES},
+                    },
+                    "budget_name": {"type": "string", "description": "可选：组合预算名称，例如“三项日常预算”"},
                     "amount": {"type": "number", "description": "每月预算金额"},
+                    "note": {"type": "string", "description": "可选备注"},
                 },
-                "required": ["category", "amount"],
+                "required": ["amount"],
             },
         },
     },
@@ -1122,6 +1282,7 @@ TOOL_DEFINITIONS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "category": {"type": "string", "description": "可选：只看某个预算分类，'_total' 表示总预算"},
+                    "budget_name": {"type": "string", "description": "可选：只看某个组合预算名称"},
                     "limit": {"type": "integer", "description": "最多返回多少条，默认10，最大30"},
                 },
             },
@@ -1345,6 +1506,29 @@ def _scope_label(scope: str, my_user_id: int) -> str:
         return "配偶"
     else:
         return "家庭"
+
+
+def _normalize_budget_categories(raw_categories: Any) -> list[str]:
+    if not raw_categories:
+        return []
+    if isinstance(raw_categories, str):
+        candidates = re.split(r"[、,，/+\s]+", raw_categories.strip())
+    elif isinstance(raw_categories, (list, tuple, set)):
+        candidates = [str(item).strip() for item in raw_categories]
+    else:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if not item:
+            continue
+        if item not in CATEGORIES:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
 
 
 def _family_user_ids(my_user_id: int) -> list[int]:
