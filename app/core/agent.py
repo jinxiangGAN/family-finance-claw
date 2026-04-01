@@ -1088,6 +1088,48 @@ Resident action result (JSON):
 """
 
 
+def _build_image_expense_prompt(
+    *,
+    image_path: str,
+    caption: str,
+    user_id: int,
+    user_name: str,
+) -> str:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
+    return f"""You are `小灰毛`, the resident Codex brain behind a Telegram family finance bot.
+
+This turn is an image expense turn. You must inspect the image first, then do exactly one of these:
+1. Output one action:
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭","owner_user_id":{{小白的用户id}},"owner_user_name":"小白"}}}}</ACTION>
+2. Output one short final reply:
+<FINAL>...</FINAL>
+
+Rules:
+1. Look at the image directly. Do not use `bridge.snapshot`.
+2. Do not issue more than one action.
+3. If the image is a recognizable receipt/bill and the core fields are visible, prefer recording one expense.
+4. If the image is not a recognizable receipt, reply briefly and say you could not stably recognize a bill this time.
+5. If no different owner is explicitly named in the caption, default the expense owner to the current sender.
+6. If the caption explicitly says the expense belongs to `小白` or `小鸡毛`, include `owner_user_id` and `owner_user_name` in the action params.
+7. Use the caption only as a hint. The image content is the primary source.
+8. Output only `<ACTION>` or `<FINAL>`.
+
+Environment:
+- Current time: {now}
+- Default currency: {CURRENCY}
+- Timezone: {TIMEZONE}
+- Family members: {family}
+- Current sender user id: {user_id}
+- Current sender name: {user_name}
+
+Image file: {image_path}
+Caption: {caption or 'none'}
+"""
+
+
 async def _run_plain_expense_turn(
     *,
     text: str,
@@ -1144,6 +1186,78 @@ async def _run_plain_expense_turn(
 
     finish_prompt = _build_plain_expense_finish_prompt(
         original_text=text,
+        action_result=action_result,
+    )
+    finish_reply = await _run_codex(
+        finish_prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+    )
+    final_reply = _extract_final_reply(finish_reply)
+    if final_reply:
+        return final_reply
+    return str(action_result.get("confirmation") or action_result.get("message") or "好呀，这笔已经记下来了。")
+
+
+async def _run_image_expense_turn(
+    *,
+    image_path: str,
+    caption: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    assistant_id: str,
+) -> str:
+    prompt = _build_image_expense_prompt(
+        image_path=image_path,
+        caption=caption,
+        user_id=user_id,
+        user_name=user_name,
+    )
+    reply = await _run_codex(
+        prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+        image_path=image_path,
+    )
+    action_request = _extract_action_request(reply)
+    if not action_request:
+        final_reply = _extract_final_reply(reply)
+        if final_reply:
+            return final_reply
+        log_event(
+            logger,
+            "agent.image_expense_no_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        return "这张图小灰毛这次没稳稳看清，你再发一次，或者补一句金额和类别我继续接。"
+
+    if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") != "record_expense":
+        log_event(
+            logger,
+            "agent.image_expense_unexpected_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+            kind=str(action_request.get("kind") or ""),
+            name=str(action_request.get("name") or ""),
+        )
+        return "这张图小灰毛理解偏了点，你再发一次，或者补一句金额和类别我重新记。"
+
+    action_result = await _execute_resident_action_request(
+        action_request=action_request,
+        user_id=user_id,
+        user_name=user_name,
+    )
+    if not action_result.get("success"):
+        return str(action_result.get("message") or "这张图这次没记成功，你再发一次我继续试。")
+
+    finish_prompt = _build_plain_expense_finish_prompt(
+        original_text=caption or "[图片记账]",
         action_result=action_result,
     )
     finish_reply = await _run_codex(
@@ -1377,14 +1491,20 @@ async def agent_handle_image(
     thread_owner_id = _thread_owner_id(user_id, session)
     if session.interaction_count == 0:
         _reset_session_history(thread_owner_id, session.chat_id, assistant_id)
-    reply = await _run_codex_resident_loop(
-        text=caption,
+    log_event(
+        logger,
+        "agent.image_expense_path",
+        assistant_id=assistant_id,
+        user_id=user_id,
+        chat_id=session.chat_id,
+    )
+    reply = await _run_image_expense_turn(
+        image_path=image_path,
+        caption=caption,
         user_id=user_id,
         user_name=user_name,
         session=session,
         assistant_id=assistant_id,
-        image_path=image_path,
-        caption=caption,
     )
     return _remember_and_reply(thread_owner_id, session.chat_id, caption or "[图片]", reply)
 
