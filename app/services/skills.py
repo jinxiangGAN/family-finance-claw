@@ -1602,7 +1602,9 @@ def execute_skill(skill_name: str, user_id: int, user_name: str, params: dict) -
     if func is None:
         return {"success": False, "message": f"未知的操作: {skill_name}"}
     try:
-        return func(user_id, user_name, params)
+        effective_user_id = int(params.pop("owner_user_id", user_id))
+        effective_user_name = str(params.pop("owner_user_name", user_name))
+        return func(effective_user_id, effective_user_name, params)
     except Exception as e:
         logger.exception("Skill %s failed", skill_name)
         return {"success": False, "message": f"操作失败: {str(e)}"}

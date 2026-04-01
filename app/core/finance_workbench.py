@@ -121,6 +121,10 @@ def _resolve_expense_owner(text: str, user_id: int, user_name: str) -> tuple[int
 
     for member_id, member_name in FAMILY_MEMBERS.items():
         escaped = re.escape(member_name)
+        if re.search(rf"^\s*(?:给|替|帮)?{escaped}(?:记一笔|记账|入账)?[，,:：\s]", stripped):
+            return member_id, member_name
+        if re.search(rf"^\s*{escaped}的", stripped):
+            return member_id, member_name
         if re.search(rf"(?:^|[，,\s]){escaped}(?:花的|付的|出的|来付)\s*$", stripped):
             return member_id, member_name
 
@@ -128,7 +132,15 @@ def _resolve_expense_owner(text: str, user_id: int, user_name: str) -> tuple[int
         for member_id, member_name in FAMILY_MEMBERS.items():
             if member_name == "小白":
                 return member_id, member_name
+    if stripped.startswith("老婆的"):
+        for member_id, member_name in FAMILY_MEMBERS.items():
+            if member_name == "小白":
+                return member_id, member_name
     if "老公花的" in stripped or "老公付的" in stripped or "老公出的" in stripped:
+        for member_id, member_name in FAMILY_MEMBERS.items():
+            if member_name == "小鸡毛":
+                return member_id, member_name
+    if stripped.startswith("老公的"):
         for member_id, member_name in FAMILY_MEMBERS.items():
             if member_name == "小鸡毛":
                 return member_id, member_name

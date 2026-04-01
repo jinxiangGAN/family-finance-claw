@@ -848,6 +848,7 @@ You have exactly two output modes and must choose one:
 1. A resident action request:
 <ACTION>{{"kind":"bridge.snapshot"}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭","owner_user_id":{{小白的用户id}},"owner_user_name":"小白"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"set_budget","params":{{"categories":["餐饮","交通","超市"],"budget_name":"三项日常预算","amount":2000}}}}</ACTION>
@@ -875,6 +876,7 @@ Rules:
 9. Keep the final reply short, warm, and grounded. Prefer `小鸡毛` / `小白` when it sounds natural.
 10. If details are ambiguous for a safe write, ask one concise clarification question inside `<FINAL>`.
 10a. For a simple expense record, if no different owner is explicitly named, default the owner to the current sender instead of asking them to restate that it was their spending.
+10b. If the user explicitly says the expense belongs to `小白` or `小鸡毛`, include `owner_user_id` and `owner_user_name` in the `record_expense` params.
 11. This is resident full-path step {step_index + 1} of {step_limit}. Avoid unnecessary loops.
 12. Emojis are welcome when they make the reply feel warm and lively. The paw-print emoji is a signature touch for `小灰毛`, but it should mainly appear in playful or lively endings rather than in every reply.
 13. In factual finance replies, keep emoji usage light and readable.
@@ -1035,6 +1037,7 @@ def _build_plain_expense_prompt(
 This turn is a plain expense-recording turn. Your job is to understand the user's short message and do exactly one of these:
 1. Output one action:
 <ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭","owner_user_id":{{小白的用户id}},"owner_user_name":"小白"}}}}</ACTION>
 2. Output one short clarification:
 <FINAL>...</FINAL>
 
@@ -1042,6 +1045,7 @@ Rules:
 1. Do not use `bridge.snapshot`.
 2. Do not issue more than one action.
 3. If no different owner is explicitly named, default the expense owner to the current sender.
+3a. If the user explicitly says the expense belongs to `小白` or `小鸡毛`, include `owner_user_id` and `owner_user_name` in the action params.
 4. If the message is understandable as one expense, prefer action over clarification.
 5. Output only `<ACTION>` or `<FINAL>`.
 
