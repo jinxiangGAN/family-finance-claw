@@ -19,6 +19,7 @@ from app.core.observability import log_event, timed_event
 from app.services.expense_service import get_today_total
 from app.services.fx_service import normalize_currency_code
 from app.services.skills import execute_skill
+from app.services.stats_service import get_spouse_id, get_member_name
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +80,27 @@ def _infer_category(note: str) -> str:
     return "其他" if "其他" in CATEGORIES else CATEGORIES[0]
 
 
-def _infer_scope(text: str) -> str:
-    if any(token in text for token in ("老婆", "小白")):
-        return "spouse"
+def _infer_scope(text: str, user_id: int) -> str:
     if any(token in text for token in ("我们", "家庭", "全家")):
         return "family"
+
+    me_name = get_member_name(user_id)
+    spouse_id = get_spouse_id(user_id)
+    spouse_name = get_member_name(spouse_id) if spouse_id is not None else ""
+
+    if spouse_name and spouse_name in text:
+        return "spouse"
+    if me_name and me_name in text:
+        return "me"
+
+    if user_id in FAMILY_MEMBERS:
+        if FAMILY_MEMBERS[user_id] == "小鸡毛" and any(token in text for token in ("老婆", "老伴")):
+            return "spouse"
+        if FAMILY_MEMBERS[user_id] == "小白" and any(token in text for token in ("老公", "先生")):
+            return "spouse"
+
+    if any(token in text for token in ("老婆", "老公", "配偶", "另一半", "对象")):
+        return "spouse"
     return "me"
 
 
@@ -138,26 +155,26 @@ def _parse_record_expense(text: str, user_id: int, user_name: str) -> dict[str, 
     }
 
 
-def _parse_recent_expenses(text: str) -> dict[str, Any]:
+def _parse_recent_expenses(text: str, user_id: int) -> dict[str, Any]:
     match = _RECENT_RE.match(text)
     limit = int(match.group("limit")) if match and match.group("limit") else 5
     return {
-        "scope": _infer_scope(text),
+        "scope": _infer_scope(text, user_id),
         "limit": limit,
         "ledger_type": "special" if "专项" in text else "",
     }
 
 
-def _parse_month_total(text: str) -> dict[str, Any]:
+def _parse_month_total(text: str, user_id: int) -> dict[str, Any]:
     return {
-        "scope": _infer_scope(text),
+        "scope": _infer_scope(text, user_id),
         "include_special": _infer_include_special(text),
     }
 
 
-def _parse_today_total(text: str) -> dict[str, Any]:
+def _parse_today_total(text: str, user_id: int) -> dict[str, Any]:
     return {
-        "scope": _infer_scope(text),
+        "scope": _infer_scope(text, user_id),
         "include_special": _infer_include_special(text),
     }
 
@@ -233,11 +250,15 @@ def _render_month_total(result: dict[str, Any]) -> str:
 
 def _render_today_total(result: dict[str, Any]) -> str:
     scope = str(result.get("scope") or "me")
-    label = {
-        "me": "小鸡毛今天",
-        "spouse": "小白今天",
-        "family": "今天家庭",
-    }.get(scope, "今天")
+    label = str(result.get("label") or "").strip()
+    if not label:
+        label = {
+            "me": "今天",
+            "spouse": "配偶今天",
+            "family": "今天家庭",
+        }.get(scope, "今天")
+    elif scope != "family":
+        label = f"{label}今天"
     total = float(result.get("total", 0))
     currency = str(result.get("currency") or CURRENCY)
     if result.get("includes_special"):
@@ -304,6 +325,8 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
     skill_name, parser = _WORKBENCH_ACTIONS[action]
     if action == "record_expense":
         params = parser(text, user_id, user_name)
+    elif action in {"recent_expenses", "month_total", "today_total"}:
+        params = parser(text, user_id)
     else:
         params = parser(text)
     effective_user_id = int(params.pop("owner_user_id", user_id))
@@ -327,6 +350,9 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
                 user_id=effective_user_id,
                 scope=str(params.get("scope") or "me"),
                 include_special=bool(params.get("include_special", False)),
+            )
+            raw_result["label"] = get_member_name(effective_user_id) if raw_result.get("scope") == "me" else (
+                get_member_name(get_spouse_id(effective_user_id)) if raw_result.get("scope") == "spouse" and get_spouse_id(effective_user_id) is not None else "家庭"
             )
         else:
             raw_result = execute_skill(skill_name, effective_user_id, effective_user_name, params)
