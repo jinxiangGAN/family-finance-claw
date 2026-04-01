@@ -6,7 +6,7 @@ The TOOL_DEFINITIONS list provides the function-calling schema for the LLM.
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ from app.services.expense_service import (
     export_expenses_csv,
     get_expense_by_id,
     get_expenses,
+    get_today_total,
     save_expense,
 )
 from app.services.fx_service import convert_amount, fx_source_label, get_exchange_rate
@@ -352,6 +353,68 @@ def skill_query_recent_expenses(user_id: int, user_name: str, params: dict) -> d
         "items": items,
         "count": len(items),
         "currency": CURRENCY,
+    }
+
+
+def skill_query_today_total(user_id: int, user_name: str, params: dict) -> dict:
+    """Query today's total spending across me/spouse/family."""
+    scope = params.get("scope", "me")
+    include_special = bool(params.get("include_special", False))
+    return get_today_total(user_id=user_id, scope=scope, include_special=include_special)
+
+
+def skill_query_today_items(user_id: int, user_name: str, params: dict) -> dict:
+    """Query today's itemized expenses across me/spouse/family."""
+    scope = params.get("scope", "me")
+    limit = min(max(int(params.get("limit", 20)), 1), 50)
+    include_special = bool(params.get("include_special", False))
+    category = str(params.get("category", "")).strip()
+    if scope == "spouse" and get_spouse_id(user_id) is None:
+        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
+
+    user_ids = resolve_user_ids(scope, user_id)
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+
+    expenses = get_expenses(
+        user_ids=user_ids,
+        category=category,
+        ledger_type="" if include_special else "regular",
+        start=start.isoformat(),
+        end=end.isoformat(),
+        limit=limit,
+    )
+    label = _scope_label(scope, user_id)
+    items = [
+        {
+            "id": expense.id,
+            "user_id": expense.user_id,
+            "user_name": expense.user_name,
+            "category": expense.category,
+            "amount": expense.amount,
+            "currency": expense.currency,
+            "amount_sgd": expense.amount_sgd if expense.amount_sgd > 0 else expense.amount,
+            "note": expense.note,
+            "event_tag": expense.event_tag,
+            "ledger_type": expense.ledger_type,
+            "created_at": expense.created_at,
+        }
+        for expense in expenses
+    ]
+    total = sum(float(item["amount_sgd"]) for item in items)
+    return {
+        "success": True,
+        "label": label,
+        "scope": scope,
+        "category": category or None,
+        "items": items,
+        "count": len(items),
+        "total": round(total, 2),
+        "currency": CURRENCY,
+        "includes_special": include_special,
+        "date": start.date().isoformat(),
     }
 
 
@@ -1113,6 +1176,8 @@ SKILL_MAP: dict[str, Any] = {
     "query_category_total": skill_query_category_total,
     "query_category_items": skill_query_category_items,
     "query_recent_expenses": skill_query_recent_expenses,
+    "query_today_total": skill_query_today_total,
+    "query_today_items": skill_query_today_items,
     "query_summary": skill_query_summary,
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
@@ -1234,6 +1299,38 @@ TOOL_DEFINITIONS: list[dict] = [
                     "category": {"type": "string", "description": "可选：只看某个分类", "enum": ["", *CATEGORIES]},
                     "limit": {"type": "integer", "description": "最多返回多少条，默认10，最大30"},
                     "ledger_type": {"type": "string", "description": "可选：regular 只看日常，special 只看专项"},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_today_total",
+            "description": "查询今天的总支出。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                    "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
+                },
+                "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_today_items",
+            "description": "查询今天的逐笔消费明细。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                    "category": {"type": "string", "description": "可选：只看某个分类", "enum": ["", *CATEGORIES]},
+                    "limit": {"type": "integer", "description": "最多返回多少条，默认20"},
+                    "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
                 },
                 "required": ["scope"],
             },

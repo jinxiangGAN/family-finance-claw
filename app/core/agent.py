@@ -152,6 +152,16 @@ _FAST_INTENT_ACTIONS: dict[str, str] = {
     "delete_by_id": "finance.delete_by_id",
     "forward_message": "family.forward_message",
 }
+_SHORT_QUERY_SKILL_NAMES = {
+    "query_today_total",
+    "query_today_items",
+    "query_monthly_total",
+    "query_category_total",
+    "query_category_items",
+    "query_recent_expenses",
+    "query_summary",
+    "query_budget",
+}
 _EXCHANGE_RATE_HINTS = (
     "人民币",
     "美元",
@@ -240,6 +250,24 @@ def _looks_like_budget_query(text: str) -> bool:
     if not stripped:
         return False
     return bool(_BUDGET_QUERY_RE.match(stripped))
+
+
+def _looks_like_short_query_turn(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _looks_like_record_expense(stripped) or _looks_like_budget_write(stripped):
+        return False
+    if any(
+        pattern.match(stripped)
+        for pattern in (_RECENT_EXPENSES_RE, _TODAY_TOTAL_RE, _MONTH_TOTAL_RE, _DETAIL_QUERY_RE, _BUDGET_QUERY_RE)
+    ):
+        return True
+    if any(token in stripped for token in ("花费", "花销", "开销", "支出", "消费", "明细", "细则", "汇总", "预算")) and any(
+        token in stripped for token in ("今天", "今日", "本月", "这个月", "最近", "小白", "小鸡毛", "全家", "家庭", "多少", "看看", "查看", "查")
+    ):
+        return True
+    return False
 
 
 def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
@@ -1310,6 +1338,158 @@ async def _run_image_expense_turn(
     return str(action_result.get("confirmation") or action_result.get("message") or "好呀，这笔已经记下来了。")
 
 
+def _build_short_query_prompt(
+    *,
+    text: str,
+    user_id: int,
+    user_name: str,
+) -> str:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
+    return f"""You are `小灰毛`, the resident Codex brain behind a Telegram family finance bot.
+
+This turn is a short finance query turn. First understand the wording and scope, then issue exactly one query action.
+
+You must do exactly one of these:
+1. Output one resident action:
+<ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"me"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"spouse"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_today_items","params":{{"scope":"family"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_monthly_total","params":{{"scope":"me"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"family"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_category_total","params":{{"scope":"spouse","category":"餐饮"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_category_items","params":{{"scope":"spouse","category":"餐饮","limit":20}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_recent_expenses","params":{{"scope":"spouse","limit":10}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_budget","params":{{}}}}</ACTION>
+2. Output one short clarification:
+<FINAL>...</FINAL>
+
+Rules:
+1. Do not use `bridge.snapshot`.
+2. Do not issue more than one action.
+3. Use scope:
+   - `me` for the current sender
+   - `spouse` when the sender is asking about the other family member (`小白` or `小鸡毛`)
+   - `family` for `全家` / `家庭` / `我们`
+4. For `今天/今日` total questions, prefer `query_today_total`.
+5. For `今天/今日` expense-list style questions, prefer `query_today_items`.
+6. For `本月/这个月` total questions, prefer `query_monthly_total`.
+7. For `明细/细则`, prefer `query_today_items`, `query_category_items`, or `query_recent_expenses` depending on the wording.
+8. For category total questions such as `餐饮花了多少`, prefer `query_category_total`.
+9. For budget questions, prefer `query_budget`.
+10. If the wording is understandable enough for one query action, do not ask a clarification question.
+11. Output only `<ACTION>` or `<FINAL>`.
+
+Environment:
+- Current time: {now}
+- Default currency: {CURRENCY}
+- Timezone: {TIMEZONE}
+- Family members: {family}
+- Current sender user id: {user_id}
+- Current sender name: {user_name}
+
+User message:
+{text.strip()}
+"""
+
+
+def _build_short_query_finish_prompt(
+    *,
+    original_text: str,
+    action_result: dict[str, Any],
+) -> str:
+    return f"""You are `小灰毛`.
+
+The finance query has already been executed successfully. Write one short final Telegram reply in Simplified Chinese.
+
+Rules:
+1. Use the action result as the factual source of truth.
+2. Keep all facts unchanged.
+3. Be concise, warm, and easy to scan.
+4. If the result contains items, it is okay to list a few key lines and then give the total if available.
+5. You may lightly polish the wording so it feels natural, but do not invent details or say you cannot query something that is already present in the result.
+6. Emojis are optional and should stay light.
+7. Output only:
+<FINAL>...</FINAL>
+
+Original user message:
+{original_text.strip()}
+
+Resident action result (JSON):
+{_format_action_result(action_result)}
+"""
+
+
+async def _run_short_query_turn(
+    *,
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    assistant_id: str,
+) -> str:
+    prompt = _build_short_query_prompt(
+        text=text,
+        user_id=user_id,
+        user_name=user_name,
+    )
+    reply = await _run_codex(
+        prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+    )
+    action_request = _extract_action_request(reply)
+    if not action_request:
+        final_reply = _extract_final_reply(reply)
+        if final_reply:
+            return final_reply
+        log_event(
+            logger,
+            "agent.short_query_no_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        return "这次查询小灰毛没稳稳接住，你再发一次，我继续帮你查。"
+
+    if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") not in _SHORT_QUERY_SKILL_NAMES:
+        log_event(
+            logger,
+            "agent.short_query_unexpected_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+            kind=str(action_request.get("kind") or ""),
+            name=str(action_request.get("name") or ""),
+        )
+        return "这次查询小灰毛理解偏了点，你再发一次，我重新查。"
+
+    action_result = await _execute_resident_action_request(
+        action_request=action_request,
+        user_id=user_id,
+        user_name=user_name,
+    )
+    if not action_result.get("success"):
+        return str(action_result.get("message") or "这次查询没稳稳跑出来，你再发一次我继续查。")
+
+    finish_prompt = _build_short_query_finish_prompt(
+        original_text=text,
+        action_result=action_result,
+    )
+    finish_reply = await _run_codex(
+        finish_prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+    )
+    final_reply = _extract_final_reply(finish_reply)
+    if final_reply:
+        return final_reply
+    return str(action_result.get("message") or "好呀，小灰毛已经帮你查到了。")
+
+
 def _build_fast_prompt(
     text: str,
     user_id: int,
@@ -1480,6 +1660,23 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
         if reply:
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         reply = "小灰毛这次没稳稳接住这个快捷动作，麻烦再发一次，我继续帮着看。"
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+
+    if _looks_like_short_query_turn(text):
+        log_event(
+            logger,
+            "agent.short_query_path",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        reply = await _run_short_query_turn(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            assistant_id=assistant_id,
+        )
         return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
     if _looks_like_record_expense(text):
