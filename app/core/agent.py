@@ -95,9 +95,11 @@ _DELETE_BY_DESC_RE = re.compile(
     r"^\s*删除\s*(\d+(?:\.\d+)?)\s*(?:块|元|rmb|cny|sgd|usd)?\s*([^#\n\r]*)?(?:那笔|这一笔|那条|这条)?\s*$",
     re.IGNORECASE,
 )
+_BUDGET_SET_RE = re.compile(
+    r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(\d+(?:\.\d+)?)(?:\s*(?:[A-Za-z]{3}|元|块|人民币))?\s*$"
+)
 _WRITE_ACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?:^|\s)(?:删除|删掉|撤销)(?:最近一笔|上一笔|#?\d+|这笔|那笔)?"), "delete an expense record"),
-    (re.compile(r"(?:预算.*(?:设为|改成|改为|调整为))"), "update a budget"),
     (re.compile(r"(?:开始|创建|开启).*(?:旅行|计划|专项|事件)"), "create or activate a special plan"),
     (re.compile(r"(?:结束|关闭).*(?:旅行|计划|专项|事件)"), "close a special plan"),
 ]
@@ -117,9 +119,6 @@ _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\
 _MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
 _TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
 _BUDGET_QUERY_RE = re.compile(r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)|看看预算|查预算)\s*[？?]?\s*$")
-_BUDGET_SET_RE = re.compile(
-    r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(\d+(?:\.\d+)?)\s*$"
-)
 _FORWARD_MESSAGE_PATTERNS = [
     re.compile(
         r"^\s*(?:帮我)?给\s*(?P<target>[^\s,，:：]+)\s*(?:发消息|发|带句话|说一声|说)\s*[:：,，]?\s*(?P<body>.+?)\s*$"
@@ -372,6 +371,8 @@ def _detect_write_action(text: str, image_path: Optional[str] = None) -> Optiona
     stripped = text.strip()
     if not stripped:
         return None
+    if _BUDGET_SET_RE.match(stripped):
+        return "update a budget"
     if _ARCHIVE_MEMORY_RE.match(stripped):
         return "archive a memory"
     if _UPDATE_MEMORY_RE.match(stripped):

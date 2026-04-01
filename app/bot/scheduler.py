@@ -10,6 +10,7 @@ import logging
 import random
 from datetime import datetime
 
+from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 
 from zoneinfo import ZoneInfo
@@ -29,6 +30,10 @@ from app.services.stats_service import (
 from app.services.household_service import get_goal_progress, get_recurring_status, get_spending_anomalies
 
 logger = logging.getLogger(__name__)
+
+
+def _md(text: object) -> str:
+    return escape_markdown(str(text), version=1)
 
 
 # ═══════════════════════════════════════════
@@ -55,7 +60,7 @@ async def weekly_summary_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _build_weekly_report(user_id: int) -> str:
     """Build a weekly report message for a specific user."""
-    name = FAMILY_MEMBERS.get(user_id, str(user_id))
+    name = _md(FAMILY_MEMBERS.get(user_id, str(user_id)))
 
     my_summary = get_last_n_days_summary(7, [user_id])
     my_total = sum(item["total"] for item in my_summary)
@@ -77,7 +82,7 @@ def _build_weekly_report(user_id: int) -> str:
     # Spouse
     spouse_id = get_spouse_id(user_id)
     if spouse_id is not None:
-        spouse_name = FAMILY_MEMBERS.get(spouse_id, str(spouse_id))
+        spouse_name = _md(FAMILY_MEMBERS.get(spouse_id, str(spouse_id)))
         sp_summary = get_last_n_days_summary(7, [spouse_id])
         sp_total = sum(item["total"] for item in sp_summary)
         lines.append(f"\n👫 *{spouse_name}（最近7天）*")
@@ -118,7 +123,7 @@ def _build_weekly_report(user_id: int) -> str:
         lines.append("\n🧠 *我记得你们说过*")
         for m in memories:
             if m["category"] in ("goal", "decision"):
-                lines.append(f"  💡 {m['content']}")
+                lines.append(f"  💡 {_md(m['content'])}")
 
     anomalies = get_spending_anomalies(request_user_id=user_id, scope="me")
     if anomalies.get("anomalies"):
@@ -162,7 +167,7 @@ async def proactive_nudge_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _build_proactive_nudge(user_id: int) -> str:
     """Build a context-aware Friday nudge."""
-    name = FAMILY_MEMBERS.get(user_id, str(user_id))
+    name = _md(FAMILY_MEMBERS.get(user_id, str(user_id)))
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
 
@@ -240,7 +245,7 @@ def _build_proactive_nudge(user_id: int) -> str:
 
     # Recall relevant goals
     if goal_memories:
-        lines.append(f"\n🧠 提醒：{goal_memories[0]['content']}")
+        lines.append(f"\n🧠 提醒：{_md(goal_memories[0]['content'])}")
 
     recurring = get_recurring_status(user_id)
     overdue = [item for item in (recurring.get("items") or []) if item.get("status") == "overdue"]
@@ -315,7 +320,7 @@ async def monthly_archive_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_count: int) -> dict:
     """Build and persist-friendly monthly report payload for one person view."""
-    name = FAMILY_MEMBERS.get(user_id, str(user_id))
+    name = _md(FAMILY_MEMBERS.get(user_id, str(user_id)))
     my_rows = get_monthly_archive(year, month, user_id=user_id)
     my_total = sum(r["total"] for r in my_rows)
 
@@ -332,7 +337,7 @@ def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_
         lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
 
     if spouse_id is not None:
-        spouse_name = FAMILY_MEMBERS.get(spouse_id, str(spouse_id))
+        spouse_name = _md(FAMILY_MEMBERS.get(spouse_id, str(spouse_id)))
         lines.append(f"\n👫 *{spouse_name}*：{spouse_total:.2f} {CURRENCY}")
         for row in spouse_rows[:5]:
             lines.append(f"  {row['category']}：{row['total']:.2f} {CURRENCY}")
@@ -347,7 +352,7 @@ def _build_monthly_report_payload(user_id: int, year: int, month: int, archived_
     if monthly_memories:
         lines.append("\n🧠 *相关提醒*")
         for memory in monthly_memories[:2]:
-            lines.append(f"  💡 {memory['content']}")
+            lines.append(f"  💡 {_md(memory['content'])}")
 
     if goal_items:
         lines.append("\n🎯 *本月目标状态*")
@@ -391,7 +396,7 @@ def _build_family_monthly_report_payload(year: int, month: int, archived_count: 
     if monthly_memories:
         lines.append("\n🧠 *家庭相关提醒*")
         for memory in monthly_memories[:3]:
-            lines.append(f"  💡 {memory['content']}")
+            lines.append(f"  💡 {_md(memory['content'])}")
 
     if family_goals:
         lines.append("\n🎯 *家庭目标状态*")
