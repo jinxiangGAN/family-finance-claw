@@ -119,7 +119,12 @@ _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\
 _MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
 _TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
 _BUDGET_QUERY_RE = re.compile(
-    r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)?|看看预算|查预算|查看预算|预算列表|当前预算)\s*[？?]?\s*$"
+    r"^\s*(?:"
+    r"(?:看看|看下|查看|查下|查一下)?(?:当前)?预算(?:还剩多少|剩多少|情况|怎么样|列表)?"
+    r"|有哪些预算"
+    r"|我(?:们)?的预算(?:情况|呢|有哪些)?"
+    r"|(?:[\u4e00-\u9fffA-Za-z_]+)预算(?:是多少|多少|还剩多少|怎么样|情况)?"
+    r")\s*[？?]?\s*$"
 )
 _FORWARD_MESSAGE_PATTERNS = [
     re.compile(
@@ -222,9 +227,16 @@ def _looks_like_budget_write(text: str) -> bool:
     stripped = text.strip()
     if "预算" not in stripped:
         return False
-    if _BUDGET_QUERY_RE.match(stripped):
+    if _looks_like_budget_query(stripped):
         return False
     return bool(re.search(r"\d+(?:\.\d+)?", stripped))
+
+
+def _looks_like_budget_query(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return bool(_BUDGET_QUERY_RE.match(stripped))
 
 
 def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
@@ -633,7 +645,7 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return "today_total"
     if _looks_like_exchange_rate_query(stripped):
         return "exchange_rate"
-    if _BUDGET_QUERY_RE.match(stripped):
+    if _looks_like_budget_query(stripped):
         return "budget_query"
     return None
 
