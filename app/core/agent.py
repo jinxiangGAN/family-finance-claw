@@ -144,11 +144,13 @@ _FORWARD_MESSAGE_PATTERNS = [
 _FAST_WORKBENCH_INTENTS = {
     "exchange_rate",
     "delete_by_id",
+    "forward_message",
 }
 
 _FAST_INTENT_ACTIONS: dict[str, str] = {
     "exchange_rate": "finance.exchange_rate",
     "delete_by_id": "finance.delete_by_id",
+    "forward_message": "family.forward_message",
 }
 _EXCHANGE_RATE_HINTS = (
     "人民币",
@@ -634,6 +636,8 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
     stripped = text.strip()
     if image_path:
         return None
+    if any(pattern.match(stripped) for pattern in _FORWARD_MESSAGE_PATTERNS):
+        return "forward_message"
     if _DELETE_BY_ID_RE.match(stripped):
         return "delete_by_id"
     if _looks_like_exchange_rate_query(stripped):
@@ -1318,6 +1322,7 @@ def _build_fast_prompt(
     action_name, intent_note = {
         "exchange_rate": ("finance.exchange_rate", "simple exchange-rate query"),
         "delete_by_id": ("finance.delete_by_id", "simple delete-by-id"),
+        "forward_message": ("family.forward_message", "simple family message forwarding"),
     }[fast_intent]
     return f"""Fast workbench turn for `小灰毛`.
 
