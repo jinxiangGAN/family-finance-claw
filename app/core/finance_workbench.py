@@ -36,6 +36,9 @@ _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\
 _TODAY_TOTAL_RE = re.compile(
     r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$"
 )
+_DETAIL_RE = re.compile(
+    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今天|今日|本月|这个月|最近)?(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
+)
 _BUDGET_SET_RE = re.compile(
     r"^\s*(?P<category>[\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(?P<amount>\d+(?:\.\d+)?)(?:\s*(?P<currency>[A-Za-z]{3}|元|块|人民币))?\s*$"
 )
@@ -179,6 +182,30 @@ def _parse_recent_expenses(text: str, user_id: int) -> dict[str, Any]:
     }
 
 
+def _parse_expense_details(text: str, user_id: int) -> dict[str, Any]:
+    scope = _infer_scope(text, user_id)
+    include_special = _infer_include_special(text)
+    category = ""
+    for item in CATEGORIES:
+        if item in text:
+            category = item
+            break
+    if category:
+        return {
+            "mode": "category",
+            "scope": scope,
+            "category": category,
+            "limit": 20,
+            "include_special": include_special,
+        }
+    return {
+        "mode": "recent",
+        "scope": scope,
+        "limit": 20,
+        "ledger_type": "special" if "专项" in text else "",
+    }
+
+
 def _parse_month_total(text: str, user_id: int) -> dict[str, Any]:
     return {
         "scope": _infer_scope(text, user_id),
@@ -253,6 +280,10 @@ def _render_recent_expenses(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _render_expense_details(result: dict[str, Any]) -> str:
+    return _render_recent_expenses(result)
+
+
 def _render_month_total(result: dict[str, Any]) -> str:
     label = result.get("label", "本月")
     total = float(result.get("total", 0))
@@ -313,6 +344,7 @@ def _render_exchange_rate(result: dict[str, Any]) -> str:
 _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "record_expense": ("record_expense", _parse_record_expense),
     "recent_expenses": ("query_recent_expenses", _parse_recent_expenses),
+    "expense_details": ("query_recent_expenses", _parse_expense_details),
     "month_total": ("query_monthly_total", _parse_month_total),
     "today_total": ("query_today_total", _parse_today_total),
     "exchange_rate": ("query_exchange_rate", _parse_exchange_rate),
@@ -324,6 +356,7 @@ _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
 _WORKBENCH_RENDERERS: dict[str, Any] = {
     "record_expense": _render_record_expense,
     "recent_expenses": _render_recent_expenses,
+    "expense_details": _render_expense_details,
     "month_total": _render_month_total,
     "today_total": _render_today_total,
     "exchange_rate": _render_exchange_rate,
@@ -339,7 +372,7 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
     skill_name, parser = _WORKBENCH_ACTIONS[action]
     if action == "record_expense":
         params = parser(text, user_id, user_name)
-    elif action in {"recent_expenses", "month_total", "today_total"}:
+    elif action in {"recent_expenses", "expense_details", "month_total", "today_total"}:
         params = parser(text, user_id)
     else:
         params = parser(text)
@@ -368,6 +401,20 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
             raw_result["label"] = get_member_name(effective_user_id) if raw_result.get("scope") == "me" else (
                 get_member_name(get_spouse_id(effective_user_id)) if raw_result.get("scope") == "spouse" and get_spouse_id(effective_user_id) is not None else "家庭"
             )
+        elif action == "expense_details":
+            if str(params.get("mode") or "") == "category":
+                raw_result = execute_skill("query_category_items", effective_user_id, effective_user_name, {
+                    "scope": params.get("scope", "me"),
+                    "category": params.get("category", "其他"),
+                    "limit": params.get("limit", 20),
+                    "include_special": bool(params.get("include_special", False)),
+                })
+            else:
+                raw_result = execute_skill("query_recent_expenses", effective_user_id, effective_user_name, {
+                    "scope": params.get("scope", "me"),
+                    "limit": params.get("limit", 20),
+                    "ledger_type": params.get("ledger_type", ""),
+                })
         else:
             raw_result = execute_skill(skill_name, effective_user_id, effective_user_name, params)
     renderer = _WORKBENCH_RENDERERS[action]
