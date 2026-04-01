@@ -578,12 +578,23 @@ def skill_query_budget(user_id: int, user_name: str, params: dict) -> dict:
     ]
     recent_changes.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
+    summary_parts: list[str] = []
+    if budgets:
+        summary_parts.append(f"单项/总预算 {len(budgets)} 项")
+    if budget_groups:
+        summary_parts.append(f"组合预算 {len(budget_groups)} 项")
+    if summary_parts:
+        message = f"当前已设置 {'，'.join(summary_parts)}。"
+    else:
+        message = "尚未设置任何预算。"
+
     return {
         "success": True,
         "budgets": budgets,
         "budget_groups": budget_groups,
         "recent_changes": recent_changes,
         "currency": CURRENCY,
+        "message": message,
     }
 
 

@@ -118,7 +118,9 @@ _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
 _TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
-_BUDGET_QUERY_RE = re.compile(r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)|看看预算|查预算)\s*[？?]?\s*$")
+_BUDGET_QUERY_RE = re.compile(
+    r"^\s*(?:预算(?:还剩多少|剩多少|情况|怎么样)?|看看预算|查预算|查看预算|预算列表|当前预算)\s*[？?]?\s*$"
+)
 _FORWARD_MESSAGE_PATTERNS = [
     re.compile(
         r"^\s*(?:帮我)?给\s*(?P<target>[^\s,，:：]+)\s*(?:发消息|发|带句话|说一声|说)\s*[:：,，]?\s*(?P<body>.+?)\s*$"
@@ -834,6 +836,7 @@ Rules:
 4. Use `bridge.snapshot` when you need recent expenses, recent memories, or profile context from the database.
 5. Use `bridge.skill` for finance/business actions such as query, budget, event, summary, recurring bills, balances, anomalies, goals, and expense operations.
 5a. If the user wants one shared budget across multiple categories, call `set_budget` with a `categories` list and optional `budget_name` instead of recording an expense.
+5b. `query_budget` results may contain both `budgets` and `budget_groups`. If `budget_groups` is present, mention the grouped/shared budgets explicitly in the final reply.
 6. Use `bridge.store_memory` only after the user has already confirmed the memory should be saved. Memory content must be concise English.
 7. If the user is only chatting, you may reply directly with `<FINAL>` and no action.
 8. Final replies must be in Simplified Chinese only.
