@@ -33,7 +33,9 @@ _RECORD_OWNER_SUFFIX_RE = re.compile(
 )
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(?P<expense_id>\d+)\s*$")
 _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\s*笔")
-_TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
+_TODAY_TOTAL_RE = re.compile(
+    r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$"
+)
 _BUDGET_SET_RE = re.compile(
     r"^\s*(?P<category>[\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(?P<amount>\d+(?:\.\d+)?)(?:\s*(?P<currency>[A-Za-z]{3}|元|块|人民币))?\s*$"
 )

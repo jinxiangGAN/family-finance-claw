@@ -117,7 +117,9 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(r"^\s*(?:这个月|本月)(?:我|我们|家庭|全家)?(?:总共)?花了多少[？?]?\s*$")
-_TODAY_TOTAL_RE = re.compile(r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$")
+_TODAY_TOTAL_RE = re.compile(
+    r"^\s*(?:查看|看看)?(?:今日|今天)(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少)\s*[？?]?\s*$"
+)
 _BUDGET_QUERY_RE = re.compile(
     r"^\s*(?:"
     r"(?:看看|看下|查看|查下|查一下)?(?:当前)?预算(?:还剩多少|剩多少|情况|怎么样|列表)?"
@@ -652,6 +654,31 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
     if _looks_like_budget_query(stripped):
         return "budget_query"
     return None
+
+
+def _rewrite_scope_followup(text: str, history: list[dict[str, str]]) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    if any(token in stripped for token in ("包括小白", "算上小白", "加上小白", "带上小白")):
+        for item in reversed(history):
+            if item.get("role") != "user":
+                continue
+            previous = str(item.get("content") or "").strip()
+            if _TODAY_TOTAL_RE.match(previous):
+                return "查看今天全家的花费"
+            if _MONTH_TOTAL_RE.match(previous):
+                return "查看本月全家的花费"
+    if any(token in stripped for token in ("包括小鸡毛", "算上小鸡毛", "加上小鸡毛", "带上小鸡毛")):
+        for item in reversed(history):
+            if item.get("role") != "user":
+                continue
+            previous = str(item.get("content") or "").strip()
+            if _TODAY_TOTAL_RE.match(previous):
+                return "查看今天全家的花费"
+            if _MONTH_TOTAL_RE.match(previous):
+                return "查看本月全家的花费"
+    return stripped
 
 
 def _looks_like_exchange_rate_query(text: str) -> bool:
@@ -1335,6 +1362,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     thread_owner_id = _thread_owner_id(user_id, session)
     if session.interaction_count == 0:
         _reset_session_history(thread_owner_id, session.chat_id, assistant_id)
+    text = _rewrite_scope_followup(text, _get_recent_history(thread_owner_id, session.chat_id))
 
     pending_action_key = (thread_owner_id, session.chat_id)
     pending_action = _PENDING_ACTION.get(pending_action_key)
