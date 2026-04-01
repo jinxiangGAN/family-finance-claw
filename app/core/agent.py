@@ -128,7 +128,6 @@ _FORWARD_MESSAGE_PATTERNS = [
     ),
 ]
 _FAST_WORKBENCH_INTENTS = {
-    "record_expense",
     "recent_expenses",
     "month_total",
     "today_total",
@@ -139,7 +138,6 @@ _FAST_WORKBENCH_INTENTS = {
 }
 
 _FAST_INTENT_ACTIONS: dict[str, str] = {
-    "record_expense": "finance.record_expense",
     "recent_expenses": "finance.recent_expenses",
     "month_total": "finance.month_total",
     "today_total": "finance.today_total",
@@ -190,14 +188,6 @@ def _get_recent_history(user_id: int, chat_id: int) -> list[dict[str, str]]:
     return list(_SESSION_HISTORY.get((user_id, chat_id), []))
 
 
-def _has_recent_budget_context(user_id: int, chat_id: int) -> bool:
-    history = _SESSION_HISTORY.get((user_id, chat_id), [])
-    if not history:
-        return False
-    recent_items = history[-4:]
-    return any("预算" in str(item.get("content") or "") for item in recent_items)
-
-
 def _reset_session_history(user_id: int, chat_id: int, assistant_id: str) -> None:
     _SESSION_HISTORY.pop((user_id, chat_id), None)
     _PENDING_MEMORY.pop((user_id, chat_id), None)
@@ -224,21 +214,6 @@ def _looks_like_record_expense(text: str) -> bool:
     if "预算" in normalized and _BUDGET_SET_RE.match(normalized):
         return False
     return bool(_RECORD_LIKE_RE.match(normalized))
-
-
-def _should_bypass_fast_expense(text: str, user_id: int, chat_id: int) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    if "预算" in stripped or _BUDGET_SET_RE.match(stripped):
-        return True
-    if not _has_recent_budget_context(user_id, chat_id):
-        return False
-    if any(token in stripped for token in ("每月", "每个月", "合计", "总预算", "三项", "两项", "几项")):
-        return True
-    if re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9，,\s块元人民币SGDUSD\.]+", stripped):
-        return True
-    return False
 
 
 def reset_agent_context(user_id: int, chat_id: int, *, assistant_id: str = "family-finance", is_group: bool = False) -> None:
@@ -637,8 +612,6 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return None
     if any(pattern.match(stripped) for pattern in _FORWARD_MESSAGE_PATTERNS):
         return "forward_message"
-    if _looks_like_record_expense(stripped):
-        return "record_expense"
     if _DELETE_BY_ID_RE.match(stripped):
         return "delete_by_id"
     if _RECENT_EXPENSES_RE.match(stripped):
@@ -831,6 +804,7 @@ Handle exactly one Telegram user request. Telegram is only the terminal. You are
 You have exactly two output modes and must choose one:
 1. A resident action request:
 <ACTION>{{"kind":"bridge.snapshot"}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"set_recurring_rule","params":{{"name":"房租","category":"房租","amount":4500,"due_day":1,"shared":true}}}}</ACTION>
@@ -982,12 +956,10 @@ def _build_fast_prompt(
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
     action_name, intent_note = {
-        "record_expense": ("finance.record_expense", "simple expense recording"),
         "recent_expenses": ("finance.recent_expenses", "simple recent-records query"),
         "month_total": ("finance.month_total", "simple current-month total query"),
         "exchange_rate": ("finance.exchange_rate", "simple exchange-rate query"),
         "budget_query": ("finance.budget_query", "simple budget-status query"),
-        "budget_set": ("finance.budget_set", "simple budget update"),
         "delete_by_id": ("finance.delete_by_id", "simple delete-by-id"),
         "forward_message": ("family.forward_message", "simple family message forwarding"),
     }[fast_intent]
@@ -1124,8 +1096,6 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
         return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
     fast_intent = _detect_fast_finance_intent(text)
-    if fast_intent == "record_expense" and _should_bypass_fast_expense(text, thread_owner_id, session.chat_id):
-        fast_intent = None
     if fast_intent in _FAST_WORKBENCH_INTENTS:
         from app.core.action_registry import run_action_async
 
