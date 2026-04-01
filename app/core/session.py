@@ -162,6 +162,12 @@ def get_private_chat_route(user_id: int) -> Optional[int]:
     return _private_chat_routes.get(user_id)
 
 
+def remember_private_chat_route(user_id: int, chat_id: int) -> None:
+    """Persist a private chat route discovered during runtime."""
+    _private_chat_routes[user_id] = chat_id
+    _save_private_chat_routes()
+
+
 # ═══════════════════════════════════════════
 #  Legacy compatibility
 # ═══════════════════════════════════════════

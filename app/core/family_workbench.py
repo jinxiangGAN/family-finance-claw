@@ -11,7 +11,7 @@ from typing import Any
 
 from app.config import FAMILY_MEMBERS
 from app.core.observability import log_event, timed_event
-from app.core.session import get_private_chat_route
+from app.core.session import get_private_chat_route, remember_private_chat_route
 from app.core.telegram_sender import send_message_via_bot, send_message_via_bot_async
 
 logger = logging.getLogger(__name__)
@@ -79,12 +79,8 @@ def _deliver_forward_message(
     target_name: str,
     body: str,
 ) -> dict[str, Any]:
-    target_chat_id = get_private_chat_route(target_id)
-    if target_chat_id is None:
-        return {
-            "success": False,
-            "message": f"小灰毛这边还没连上 {target_name} 的私聊入口。先让 {target_name} 私聊小灰毛发一句话，再来让小灰毛代发就行。",
-        }
+    route_chat_id = get_private_chat_route(target_id)
+    target_chat_id = route_chat_id if route_chat_id is not None else target_id
     forwarded_text = f"📨 小灰毛帮忙转一句 {sender_name} 的话：\n\n{body}"
     try:
         with timed_event(
@@ -93,20 +89,28 @@ def _deliver_forward_message(
             target_id=target_id,
             target_name=target_name,
             target_chat_id=target_chat_id,
+            route_source="cached_route" if route_chat_id is not None else "direct_user_id",
         ):
             payload = send_message_via_bot(target_chat_id, forwarded_text, timeout_seconds=15.0)
     except Exception as exc:
         return {
             "success": False,
-            "message": f"这次小灰毛没能把话带给 {target_name}。先让 {target_name} 再私聊小灰毛发一句话，或者稍后再试一次会更稳。",
+            "message": (
+                f"这次小灰毛没能把话带给 {target_name}。"
+                f"如果 {target_name} 明明已经和小灰毛聊过，通常是 Telegram 那边没让这次投递落进去，"
+                "可以让对方再发一句 /start 或普通消息后再试一次。"
+            ),
             "error": str(exc),
             "target_chat_id": target_chat_id,
+            "route_source": "cached_route" if route_chat_id is not None else "direct_user_id",
         }
+    remember_private_chat_route(target_id, target_chat_id)
     return {
         "success": True,
         "message": f"好呀，小灰毛已经把话带给 {target_name} 了。",
         "target_chat_id": target_chat_id,
         "message_id": payload.get("message_id"),
+        "route_source": "cached_route" if route_chat_id is not None else "direct_user_id",
     }
 
 
@@ -117,12 +121,8 @@ async def _deliver_forward_message_async(
     target_name: str,
     body: str,
 ) -> dict[str, Any]:
-    target_chat_id = get_private_chat_route(target_id)
-    if target_chat_id is None:
-        return {
-            "success": False,
-            "message": f"小灰毛这边还没连上 {target_name} 的私聊入口。先让 {target_name} 私聊小灰毛发一句话，再来让小灰毛代发就行。",
-        }
+    route_chat_id = get_private_chat_route(target_id)
+    target_chat_id = route_chat_id if route_chat_id is not None else target_id
     forwarded_text = f"📨 小灰毛帮忙转一句 {sender_name} 的话：\n\n{body}"
     try:
         with timed_event(
@@ -131,20 +131,28 @@ async def _deliver_forward_message_async(
             target_id=target_id,
             target_name=target_name,
             target_chat_id=target_chat_id,
+            route_source="cached_route" if route_chat_id is not None else "direct_user_id",
         ):
             payload = await send_message_via_bot_async(target_chat_id, forwarded_text)
     except Exception as exc:
         return {
             "success": False,
-            "message": f"这次小灰毛没能把话带给 {target_name}。先让 {target_name} 再私聊小灰毛发一句话，或者稍后再试一次会更稳。",
+            "message": (
+                f"这次小灰毛没能把话带给 {target_name}。"
+                f"如果 {target_name} 明明已经和小灰毛聊过，通常是 Telegram 那边没让这次投递落进去，"
+                "可以让对方再发一句 /start 或普通消息后再试一次。"
+            ),
             "error": str(exc),
             "target_chat_id": target_chat_id,
+            "route_source": "cached_route" if route_chat_id is not None else "direct_user_id",
         }
+    remember_private_chat_route(target_id, target_chat_id)
     return {
         "success": True,
         "message": f"好呀，小灰毛已经把话带给 {target_name} 了。",
         "target_chat_id": target_chat_id,
         "message_id": payload.get("message_id"),
+        "route_source": "cached_route" if route_chat_id is not None else "direct_user_id",
     }
 
 
