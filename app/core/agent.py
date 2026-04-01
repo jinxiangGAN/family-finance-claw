@@ -1000,6 +1000,140 @@ async def _run_codex_resident_loop(
     return "这次链路绕得有点多，小灰毛先停在这里。你再发一次，我会继续接住。"
 
 
+def _build_plain_expense_prompt(
+    *,
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+) -> str:
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+    family = ", ".join(f"{name}(id:{uid})" for uid, name in FAMILY_MEMBERS.items()) or "not configured"
+    return f"""You are `小灰毛`, the resident Codex brain behind a Telegram family finance bot.
+
+This turn is a plain expense-recording turn. Your job is to understand the user's short message and do exactly one of these:
+1. Output one action:
+<ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
+2. Output one short clarification:
+<FINAL>...</FINAL>
+
+Rules:
+1. Do not use `bridge.snapshot`.
+2. Do not issue more than one action.
+3. If no different owner is explicitly named, default the expense owner to the current sender.
+4. If the message is understandable as one expense, prefer action over clarification.
+5. Output only `<ACTION>` or `<FINAL>`.
+
+Environment:
+- Current time: {now}
+- Default currency: {CURRENCY}
+- Timezone: {TIMEZONE}
+- Family members: {family}
+- Current sender user id: {user_id}
+- Current sender name: {user_name}
+
+User message:
+{text.strip()}
+"""
+
+
+def _build_plain_expense_finish_prompt(
+    *,
+    original_text: str,
+    action_result: dict[str, Any],
+) -> str:
+    return f"""You are `小灰毛`.
+
+The expense was already recorded successfully. Write one short final Telegram reply in Simplified Chinese.
+
+Rules:
+1. Use the action result as the factual source of truth.
+2. Keep all facts unchanged.
+3. You may lightly polish the wording so it feels warm, lively, and natural.
+4. Emojis are allowed, but keep them light and easy to scan.
+5. The paw-print emoji can appear naturally at the end.
+6. Output only:
+<FINAL>...</FINAL>
+
+Original user message:
+{original_text.strip()}
+
+Resident action result (JSON):
+{_format_action_result(action_result)}
+"""
+
+
+async def _run_plain_expense_turn(
+    *,
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    assistant_id: str,
+) -> str:
+    prompt = _build_plain_expense_prompt(
+        text=text,
+        user_id=user_id,
+        user_name=user_name,
+        session=session,
+    )
+    reply = await _run_codex(
+        prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+    )
+    action_request = _extract_action_request(reply)
+    if not action_request:
+        final_reply = _extract_final_reply(reply)
+        if final_reply:
+            return final_reply
+        log_event(
+            logger,
+            "agent.plain_expense_no_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        return "这笔小灰毛这次没稳稳接住，你再发一次，我继续记。"
+
+    if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") != "record_expense":
+        log_event(
+            logger,
+            "agent.plain_expense_unexpected_action",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+            kind=str(action_request.get("kind") or ""),
+            name=str(action_request.get("name") or ""),
+        )
+        return "这笔小灰毛理解偏了点，你再发一次，我重新记。"
+
+    action_result = await _execute_resident_action_request(
+        action_request=action_request,
+        user_id=user_id,
+        user_name=user_name,
+    )
+    if not action_result.get("success"):
+        return str(action_result.get("message") or "这笔这次没记成功，你再发一次我继续试。")
+
+    finish_prompt = _build_plain_expense_finish_prompt(
+        original_text=text,
+        action_result=action_result,
+    )
+    finish_reply = await _run_codex(
+        finish_prompt,
+        user_id=_thread_owner_id(user_id, session),
+        chat_id=session.chat_id,
+        assistant_id=assistant_id,
+    )
+    final_reply = _extract_final_reply(finish_reply)
+    if final_reply:
+        return final_reply
+    return str(action_result.get("confirmation") or action_result.get("message") or "好呀，这笔已经记下来了。")
+
+
 def _build_fast_prompt(
     text: str,
     user_id: int,
@@ -1172,6 +1306,23 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
         if reply:
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         reply = "小灰毛这次没稳稳接住这个快捷动作，麻烦再发一次，我继续帮着看。"
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+
+    if _looks_like_record_expense(text):
+        log_event(
+            logger,
+            "agent.plain_expense_path",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        reply = await _run_plain_expense_turn(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            assistant_id=assistant_id,
+        )
         return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
     else:
         log_event(
