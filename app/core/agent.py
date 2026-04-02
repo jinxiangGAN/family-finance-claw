@@ -1204,6 +1204,8 @@ async def _run_plain_expense_turn(
     session: Session,
     assistant_id: str,
 ) -> str:
+    from app.core.action_registry import run_action_async
+
     prompt = _build_plain_expense_prompt(
         text=text,
         user_id=user_id,
@@ -1228,7 +1230,18 @@ async def _run_plain_expense_turn(
             user_id=user_id,
             chat_id=session.chat_id,
         )
-        return "这笔小灰毛这次没稳稳接住，你再发一次，我继续记。"
+        fallback_result = await run_action_async(
+            "finance.record_expense",
+            user_id=user_id,
+            user_name=user_name,
+            text=text,
+        )
+        if not fallback_result.get("success"):
+            return "这笔小灰毛这次没稳稳接住，你再发一次，我继续记。"
+        fallback_reply = str(fallback_result.get("reply") or "").strip()
+        if fallback_reply:
+            return fallback_reply
+        return str(fallback_result.get("message") or "好呀，这笔已经记下来了。")
 
     if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") != "record_expense":
         log_event(
@@ -1240,7 +1253,18 @@ async def _run_plain_expense_turn(
             kind=str(action_request.get("kind") or ""),
             name=str(action_request.get("name") or ""),
         )
-        return "这笔小灰毛理解偏了点，你再发一次，我重新记。"
+        fallback_result = await run_action_async(
+            "finance.record_expense",
+            user_id=user_id,
+            user_name=user_name,
+            text=text,
+        )
+        if not fallback_result.get("success"):
+            return "这笔小灰毛理解偏了点，你再发一次，我重新记。"
+        fallback_reply = str(fallback_result.get("reply") or "").strip()
+        if fallback_reply:
+            return fallback_reply
+        return str(fallback_result.get("message") or "好呀，这笔已经记下来了。")
 
     action_result = await _execute_resident_action_request(
         action_request=action_request,
