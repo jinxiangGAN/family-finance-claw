@@ -1299,6 +1299,8 @@ async def _run_image_expense_turn(
     session: Session,
     assistant_id: str,
 ) -> str:
+    from app.core.action_registry import run_action_async
+
     prompt = _build_image_expense_prompt(
         image_path=image_path,
         caption=caption,
@@ -1324,6 +1326,18 @@ async def _run_image_expense_turn(
             user_id=user_id,
             chat_id=session.chat_id,
         )
+        if caption.strip() and _looks_like_record_expense(caption):
+            fallback_result = await run_action_async(
+                "finance.record_expense",
+                user_id=user_id,
+                user_name=user_name,
+                text=caption,
+            )
+            if fallback_result.get("success"):
+                fallback_reply = str(fallback_result.get("reply") or "").strip()
+                if fallback_reply:
+                    return fallback_reply
+                return str(fallback_result.get("message") or "好呀，这笔已经先按补充文字记下来了。")
         return "这张图小灰毛这次没稳稳看清，你再发一次，或者补一句金额和类别我继续接。"
 
     if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") != "record_expense":
@@ -1336,6 +1350,18 @@ async def _run_image_expense_turn(
             kind=str(action_request.get("kind") or ""),
             name=str(action_request.get("name") or ""),
         )
+        if caption.strip() and _looks_like_record_expense(caption):
+            fallback_result = await run_action_async(
+                "finance.record_expense",
+                user_id=user_id,
+                user_name=user_name,
+                text=caption,
+            )
+            if fallback_result.get("success"):
+                fallback_reply = str(fallback_result.get("reply") or "").strip()
+                if fallback_reply:
+                    return fallback_reply
+                return str(fallback_result.get("message") or "好呀，这笔已经先按补充文字记下来了。")
         return "这张图小灰毛理解偏了点，你再发一次，或者补一句金额和类别我重新记。"
 
     action_result = await _execute_resident_action_request(
