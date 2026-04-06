@@ -115,6 +115,7 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
 }
 
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
+_DELETE_HELP_RE = re.compile(r"^\s*(?:怎么删|如何删|怎么删除|如何删除|删除入口|怎么撤销|如何撤销|删账怎么弄|怎么删账)\s*[？?]?\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(
     r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:这个月|本月)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:总共)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"
@@ -643,6 +644,18 @@ def _maybe_build_delete_candidate_reply(text: str, user_id: int) -> Optional[str
         )
     lines.append("请回复要删除的 ID，例如：`删除 #123`")
     return "\n".join(lines)
+
+
+def _maybe_build_delete_help_reply(text: str) -> Optional[str]:
+    if not _DELETE_HELP_RE.match(text.strip()):
+        return None
+    return (
+        "有的，小灰毛这边可以这样删账：\n"
+        "1. 直接用 `/delete`，走删除最近一笔的流程\n"
+        "2. 先说 `看看最近5笔`，再回 `删除 #123`\n"
+        "3. 也可以直接说 `删除 #123`\n"
+        "如果只是记得金额或备注，也可以先说：`删除 9.8 午饭那笔`，小灰毛会先帮你找候选。"
+    )
 
 
 def _build_action_confirmation(action_label: str, original_text: str) -> str:
@@ -1625,6 +1638,10 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
     if memory_admin_reply:
         return _remember_and_reply(thread_owner_id, session.chat_id, text, memory_admin_reply)
+
+    delete_help_reply = _maybe_build_delete_help_reply(text)
+    if delete_help_reply:
+        return _remember_and_reply(thread_owner_id, session.chat_id, text, delete_help_reply)
 
     delete_candidate_reply = _maybe_build_delete_candidate_reply(text, user_id)
     if delete_candidate_reply:
