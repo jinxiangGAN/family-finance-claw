@@ -31,7 +31,10 @@ _RECORD_PREFIX_RE = re.compile(r"^\s*(?:记一笔|记账|入账|记下|记一下
 _RECORD_OWNER_SUFFIX_RE = re.compile(
     r"\s*[，,]?\s*(?:我花的|我付的|我出的|是我花的|小鸡毛花的|小鸡毛付的|小鸡毛出的|小白花的|小白付的|小白出的)\s*$"
 )
-_DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(?P<expense_id>\d+)\s*$")
+_DELETE_BY_ID_RE = re.compile(
+    r"^\s*删除\s*(?:id\s*)?#?(?P<expense_id>\d+)(?:\s*(?:这笔|这条|笔消费|消费|记录))?\s*$",
+    re.IGNORECASE,
+)
 _RECENT_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(?P<limit>\d+)?\s*笔")
 _TODAY_TOTAL_RE = re.compile(
     r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今日|今天)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"

@@ -114,7 +114,7 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
     "update a memory": ("update_memory", "archive the old memory and create a new replacement version"),
 }
 
-_DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*#?(\d+)\s*$")
+_DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*(?:id\s*)?#?(?P<expense_id>\d+)(?:\s*(?:这笔|这条|笔消费|消费|记录))?\s*$", re.IGNORECASE)
 _DELETE_HELP_RE = re.compile(r"^\s*(?:怎么删|如何删|怎么删除|如何删除|删除入口|怎么撤销|如何撤销|删账怎么弄|怎么删账)\s*[？?]?\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(
@@ -653,9 +653,19 @@ def _maybe_build_delete_help_reply(text: str) -> Optional[str]:
         "有的，小灰毛这边可以这样删账：\n"
         "1. 直接用 `/delete`，走删除最近一笔的流程\n"
         "2. 先说 `看看最近5笔`，再回 `删除 #123`\n"
-        "3. 也可以直接说 `删除 #123`\n"
+        "3. 也可以直接说 `删除 #123` 或 `删除 id 123`\n"
         "如果只是记得金额或备注，也可以先说：`删除 9.8 午饭那笔`，小灰毛会先帮你找候选。"
     )
+
+
+def _extract_delete_expense_id(text: str) -> Optional[int]:
+    match = _DELETE_BY_ID_RE.match(text.strip())
+    if not match:
+        return None
+    try:
+        return int(match.group("expense_id"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _build_action_confirmation(action_label: str, original_text: str) -> str:
@@ -1619,8 +1629,32 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     pending_action = _PENDING_ACTION.get(pending_action_key)
     if pending_action:
         if _is_yes_confirmation(text):
+            from app.core.action_registry import run_action_async
+
             _PENDING_ACTION.pop(pending_action_key, None)
+            action_label = str(pending_action.get("action_label") or "")
             original_text = pending_action["original_text"]
+            if action_label == "delete an expense record":
+                delete_expense_id = _extract_delete_expense_id(original_text)
+                if delete_expense_id is not None:
+                    result = await run_action_async(
+                        "finance.delete_by_id",
+                        user_id=user_id,
+                        user_name=user_name,
+                        text=f"删除 #{delete_expense_id}",
+                    )
+                    reply = str(result.get("reply") or result.get("message") or "").strip()
+                    if reply:
+                        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+                if any(token in original_text for token in ("最近一笔", "上一笔")):
+                    reply = await _run_codex_resident_loop(
+                        text=original_text,
+                        user_id=user_id,
+                        user_name=user_name,
+                        session=session,
+                        assistant_id=assistant_id,
+                    )
+                    return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
             reply = await _run_codex_resident_loop(
                 text=original_text,
                 user_id=user_id,
