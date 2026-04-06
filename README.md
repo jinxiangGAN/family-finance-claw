@@ -9,10 +9,10 @@ The current system is designed for a 2-person household:
 
 It supports daily expense tracking, budget management, memory confirmation, special-project spending, scheduled summaries, and a Codex-backed agent workflow that can evolve into a multi-assistant orchestration layer later.
 
-For latency-sensitive common turns, the bot now also uses a simple-finance fast path:
-- still handled by Codex
-- but with a much smaller prompt
-- and a single finance workbench action path for common expense and budget actions
+For latency-sensitive common turns, the bot now uses a mixed strategy:
+- Codex remains the reasoning layer
+- only a very small set of low-ambiguity actions stay on a direct fast path
+- expense recording and most finance queries now use short resident Codex turns instead of a broad general-purpose loop
 
 ## What It Does
 
@@ -174,14 +174,32 @@ Even though the repo currently runs one assistant, the structure now leaves room
 
 ### Expense handling
 
-- Short commands like `午饭 15` should record directly.
+- Short commands like `午饭 15` still feel direct, but they now go through a short Codex expense turn first so context-sensitive wording is less likely to be misread.
+- If a plain-text expense turn does not stably produce `record_expense`, the bot now uses a resident fallback write path instead of silently dropping the expense.
 - Short voice messages are transcribed first, echoed back as `小灰毛听成了：...`, and then sent through the normal text path.
-- Simple finance requests like `午饭 15`, `本月花了多少`, `看看最近5笔`, `删除 #123`, and `餐饮预算设为1000` should prefer the fast path.
+- Receipt/photo turns use a short image expense chain; if the receipt itself is unclear but the caption already looks like a clear expense record, the caption can be used as a controlled fallback.
+- Only very low-ambiguity actions stay on the direct fast path:
+  - `删除 #123` / `删除 id 123`
+  - exchange-rate queries
+  - family forwarding
 - High-risk writes should confirm first:
   - delete expense
   - change budget
   - start/stop special plan
   - archive/update memory
+
+### Query handling
+
+- Most finance queries no longer depend on a broad regex-style fast path.
+- Instead, they now prefer a short contextual query turn:
+  - Codex understands scope and intent first
+  - one resident query action is executed
+  - the final reply is lightly polished for Telegram
+- This is especially important for queries involving:
+  - `小白` / `小鸡毛`
+  - `今天` / `本月`
+  - `明细` / `细则`
+  - `全家` / `包括小白的` / `只看小鸡毛`
 
 ### Memory handling
 

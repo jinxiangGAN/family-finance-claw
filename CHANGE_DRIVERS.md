@@ -195,6 +195,42 @@ Outcome:
 - command-style terminal actions such as runtime status, memory listing, export preparation, and context reset were also moved toward the same shared action surface
 - runtime degradation and fallback state is now surfaced instead of staying implicit
 
+### Pull query and expense handling back from over-aggressive fast paths
+
+Why it was requested:
+- the owner repeatedly pointed out that many fast-path turns felt too rigid or too stupid
+- budget phrases were being mistaken for expenses
+- scope-sensitive queries such as `查看小白今日花费` or `包括小白的` were too brittle
+- the owner explicitly preferred "Codex understands first" over a regex-heavy shortcut path
+
+Outcome:
+- fast-path coverage was reduced to only a few low-ambiguity actions
+- expense recording moved to a short Codex understanding turn plus one resident write action
+- finance queries moved toward short contextual query turns plus one resident query action
+- the system kept resident execution, but shifted more semantic work back to Codex
+
+### Add safety fallbacks for plain expense and image turns
+
+Why it was requested:
+- a simple expense like `午饭9.8` could still fail if one Codex turn did not emit the expected action
+- image turns were sometimes too fragile when the receipt was unclear, even if the caption already described the expense clearly
+
+Outcome:
+- plain expense turns now have a resident fallback write path
+- image turns can use a clear caption as a controlled fallback expense input
+- the bot is less likely to drop a real household record just because one turn was unstable
+
+### Fix deletion UX and deletion confirmation execution
+
+Why it was requested:
+- the owner showed real examples where the bot said there was no delete entry even though deletion existed
+- confirmation for `删除 id 15` was looping back into a generic path instead of actually deleting
+
+Outcome:
+- delete help/entry guidance is now stable
+- `删除 #123` and `删除 id 123` are both recognized
+- after confirmation, delete-by-id now executes directly instead of falling back into a generic Codex loop
+
 ## Documentation
 
 ### Keep the architectural story reviewable

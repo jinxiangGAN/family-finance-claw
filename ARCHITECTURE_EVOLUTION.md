@@ -258,6 +258,41 @@ Codex
 That made the architecture more consistent with the product goal:
 
 - Telegram as a thin terminal
+
+### Step 5.9: Pull back over-aggressive fast paths and replace them with short contextual turns
+
+Once more real household usage happened, a new pattern became obvious:
+
+- large fast-path coverage improved latency
+- but it also introduced too many semantic edge cases
+- the owner cared more about "Codex understands me first" than about shaving off every possible turn
+
+This showed up especially in:
+- budget wording being mistaken for expense recording
+- spouse/family scope queries drifting
+- follow-up corrections such as "包括小白的"
+- delete confirmation falling back into a generic path
+
+So the architecture evolved again:
+
+```text
+Telegram
+-> resident Codex short turn
+-> one resident action
+-> lightly polished reply
+```
+
+instead of trying to solve too many real-world utterances with a bigger and bigger fast-path surface.
+
+This led to:
+- plain expense turns becoming one short Codex understanding step plus one write action
+- finance queries moving toward short contextual query turns instead of broad regex-only routing
+- resident fallback for plain expense recording when a single Codex turn does not stably emit `record_expense`
+- better resilience for image turns by letting a clear caption serve as a fallback expense input
+
+This was an important product decision:
+
+> speed still matters, but not at the cost of making the bot feel stupid
 - Codex as the thinking layer
 - resident process actions as the execution surface
 
