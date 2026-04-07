@@ -50,6 +50,13 @@ _MEMORY_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
     (re.compile(r"(喜欢|不喜欢|偏好|习惯|通常|尽量|以后|不再|少坐|少点外卖|多做饭)"), "preference", 6),
     (re.compile(r"(决定|商量好了|定了|以后我们|这个月我们|接下来我们)"), "decision", 7),
 ]
+_MEMORY_PREFIX_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^\s*(?:请)?(?:帮我)?(?:把(?:这句|这个|这条|这段话|这件事))?(?:记住|记一下|记下来|记着|存一下|存成记忆|记成记忆)\s*[:：,，]?\s*(.+?)\s*$"),
+    re.compile(r"^\s*(?:请)?(?:帮小灰毛)?(?:记住|记一下|记下来|记着)\s*[:：,，]?\s*(.+?)\s*$"),
+]
+_MEMORY_SUFFIX_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^\s*(.+?)\s*[，,]?(?:帮我)?(?:记住|记一下|记下来|记着|存一下|存成记忆|记成记忆)\s*$"),
+]
 _FINANCE_HINT_TOKENS = (
     "花",
     "开销",
@@ -501,24 +508,53 @@ def _looks_like_memory_candidate(text: str) -> bool:
     return any(pattern.search(stripped) for pattern, _, _ in _MEMORY_PATTERNS)
 
 
+def _extract_explicit_memory_content(text: str) -> Optional[str]:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if "?" in stripped or "？" in stripped:
+        return None
+    if _QUESTION_PARTICLE_RE.search(stripped):
+        return None
+    if _QUESTION_STYLE_RE.search(stripped):
+        return None
+
+    for pattern in _MEMORY_PREFIX_PATTERNS:
+        match = pattern.match(stripped)
+        if match:
+            content = (match.group(1) or "").strip()
+            return content or None
+
+    for pattern in _MEMORY_SUFFIX_PATTERNS:
+        match = pattern.match(stripped)
+        if match:
+            content = (match.group(1) or "").strip()
+            return content or None
+
+    return None
+
+
 def _detect_memory_candidate(user_id: int, text: str) -> Optional[dict[str, object]]:
     stripped = text.strip()
-    if not _looks_like_memory_candidate(stripped):
+    content = _extract_explicit_memory_content(stripped)
+    if not content:
+        return None
+    if not _looks_like_memory_candidate(content):
         return None
 
     recent_memories = get_recent_memories(user_id, limit=10)
-    if any(m["content"].strip() == stripped for m in recent_memories):
+    if any(m["content"].strip() == content for m in recent_memories):
         return {
             "duplicate": True,
-            "content": stripped,
+            "content": content,
         }
 
     for pattern, category, importance in _MEMORY_PATTERNS:
-        if not pattern.search(stripped):
+        if not pattern.search(content):
             continue
-        target_user_id = 0 if any(token in stripped for token in ("我们", "全家", "家里", "老婆", "老公")) else user_id
+        target_user_id = 0 if any(token in content for token in ("我们", "全家", "家里", "老婆", "老公")) else user_id
         return {
-            "content": stripped,
+            "content": content,
             "category": category,
             "importance": importance,
             "target_user_id": target_user_id,
@@ -1531,7 +1567,14 @@ async def _run_short_query_turn(
             user_id=user_id,
             chat_id=session.chat_id,
         )
-        return "这次查询小灰毛没稳稳接住，你再发一次，我继续帮你查。"
+        fallback_reply = await _run_codex_resident_loop(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            assistant_id=assistant_id,
+        )
+        return fallback_reply
 
     if str(action_request.get("kind") or "") != "bridge.skill" or str(action_request.get("name") or "") not in _SHORT_QUERY_SKILL_NAMES:
         log_event(
@@ -1543,7 +1586,14 @@ async def _run_short_query_turn(
             kind=str(action_request.get("kind") or ""),
             name=str(action_request.get("name") or ""),
         )
-        return "这次查询小灰毛理解偏了点，你再发一次，我重新查。"
+        fallback_reply = await _run_codex_resident_loop(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            assistant_id=assistant_id,
+        )
+        return fallback_reply
 
     action_result = await _execute_resident_action_request(
         action_request=action_request,
@@ -1551,7 +1601,14 @@ async def _run_short_query_turn(
         user_name=user_name,
     )
     if not action_result.get("success"):
-        return str(action_result.get("message") or "这次查询没稳稳跑出来，你再发一次我继续查。")
+        fallback_reply = await _run_codex_resident_loop(
+            text=text,
+            user_id=user_id,
+            user_name=user_name,
+            session=session,
+            assistant_id=assistant_id,
+        )
+        return fallback_reply
 
     finish_prompt = _build_short_query_finish_prompt(
         original_text=text,
