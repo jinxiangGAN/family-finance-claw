@@ -89,6 +89,8 @@ _FINANCE_HINT_TOKENS = (
     "计划",
 )
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_QUESTION_PARTICLE_RE = re.compile(r"(?:吗|么|嘛|呢)\s*$")
+_QUESTION_STYLE_RE = re.compile(r"(是不是|会不会|能不能|可不可以|要不要|好不好|行不行|记不记得|知不知道)")
 _ARCHIVE_MEMORY_RE = re.compile(r"^\s*(?:忘掉|忘记|归档)\s*(?:记忆)?\s*#?(\d+)\s*$")
 _UPDATE_MEMORY_RE = re.compile(r"^\s*(?:把)?记忆\s*#?(\d+)\s*(?:改成|更新成|修改为|替换为)\s*(.+?)\s*$")
 _DELETE_BY_DESC_RE = re.compile(
@@ -487,6 +489,10 @@ def _looks_like_memory_candidate(text: str) -> bool:
     if len(stripped) < 6 or len(stripped) > 120:
         return False
     if "?" in stripped or "？" in stripped:
+        return False
+    if _QUESTION_PARTICLE_RE.search(stripped):
+        return False
+    if _QUESTION_STYLE_RE.search(stripped):
         return False
     if _looks_like_record_expense(stripped):
         return False
