@@ -95,6 +95,8 @@ def _build_help_text(session, categories_text: str) -> str:
         f"  也支持 {VOICE_MAX_DURATION_SECONDS} 秒内的短语音，先转文字再记\n\n"
         "*2. 查账*\n"
         "  `本月花了多少`\n"
+        "  `昨天花了多少`\n"
+        "  `本周花费明细`\n"
         "  `餐饮花了多少`\n"
         "  `餐饮明细`\n"
         "  `看看最近5笔`\n"
@@ -157,7 +159,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(  # type: ignore[union-attr]
         f"{greeting}欢迎使用家庭记账机器人！\n\n"
         "📝 *记账*：`午饭 35` 或发送收据照片\n"
-        "🔍 *查询*：`本月花了多少` / `老婆花了多少` / `餐饮明细`\n"
+        "🔍 *查询*：`昨天花了多少` / `本周花费明细` / `老婆花了多少` / `餐饮明细`\n"
         "📊 *汇总*：`本月汇总` / `家庭汇总`\n"
         "💰 *预算*：`餐饮预算设为1000` / `预算还剩多少`\n"
         "🏷 *事件*：`开始日本旅行` / `结束旅行`\n"

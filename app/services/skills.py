@@ -20,7 +20,6 @@ from app.services.expense_service import (
     export_expenses_csv,
     get_expense_by_id,
     get_expenses,
-    get_today_total,
     save_expense,
 )
 from app.services.fx_service import convert_amount, fx_source_label, get_exchange_rate
@@ -41,7 +40,10 @@ from app.services.stats_service import (
     get_month_total,
     get_monthly_archive,
     get_monthly_report,
+    get_range_summary,
+    get_range_total,
     get_spouse_id,
+    resolve_period_range,
     resolve_user_ids,
 )
 
@@ -197,114 +199,49 @@ def skill_delete_expense_by_id(user_id: int, user_name: str, params: dict) -> di
 
 def skill_query_monthly_total(user_id: int, user_name: str, params: dict) -> dict:
     """Query monthly total spending."""
-    scope = params.get("scope", "me")
-    include_special = bool(params.get("include_special", False))
-    if scope == "spouse" and get_spouse_id(user_id) is None:
-        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
-    user_ids = resolve_user_ids(scope, user_id)
-    total = get_month_total(user_ids, include_special=include_special)
-    label = _scope_label(scope, user_id)
-    return {
-        "success": True,
-        "label": label,
-        "total": total,
-        "currency": CURRENCY,
-        "includes_special": include_special,
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "total",
+        "period": "this_month",
+        "include_special": bool(params.get("include_special", False)),
     }
+    return skill_query_period_spending(user_id, user_name, alias_params)
 
 
 def skill_query_category_total(user_id: int, user_name: str, params: dict) -> dict:
     """Query spending for a specific category."""
-    scope = params.get("scope", "me")
-    category = params.get("category", "其他")
-    include_special = bool(params.get("include_special", False))
-    if scope == "spouse" and get_spouse_id(user_id) is None:
-        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
-    user_ids = resolve_user_ids(scope, user_id)
-    total = get_category_total(category, user_ids, include_special=include_special)
-    label = _scope_label(scope, user_id)
-    return {
-        "success": True,
-        "label": label,
-        "category": category,
-        "total": total,
-        "currency": CURRENCY,
-        "includes_special": include_special,
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "total",
+        "period": "this_month",
+        "category": params.get("category", "其他"),
+        "include_special": bool(params.get("include_special", False)),
     }
+    return skill_query_period_spending(user_id, user_name, alias_params)
 
 
 def skill_query_summary(user_id: int, user_name: str, params: dict) -> dict:
     """Query monthly summary by category."""
-    scope = params.get("scope", "me")
-    include_special = bool(params.get("include_special", False))
-    if scope == "spouse" and get_spouse_id(user_id) is None:
-        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
-    user_ids = resolve_user_ids(scope, user_id)
-    summary = get_month_summary(user_ids, include_special=include_special)
-    grand_total = sum(item["total"] for item in summary)
-    label = _scope_label(scope, user_id)
-    return {
-        "success": True,
-        "label": label,
-        "summary": summary,
-        "grand_total": grand_total,
-        "currency": CURRENCY,
-        "includes_special": include_special,
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "summary",
+        "period": "this_month",
+        "include_special": bool(params.get("include_special", False)),
     }
+    return skill_query_period_spending(user_id, user_name, alias_params)
 
 
 def skill_query_category_items(user_id: int, user_name: str, params: dict) -> dict:
     """Query itemized expenses for a category in the current month."""
-    scope = params.get("scope", "me")
-    category = params.get("category", "其他")
-    limit = min(max(int(params.get("limit", 20)), 1), 100)
-    include_special = bool(params.get("include_special", False))
-    if scope == "spouse" and get_spouse_id(user_id) is None:
-        return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
-
-    user_ids = resolve_user_ids(scope, user_id)
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if now.month == 12:
-        end = start.replace(year=now.year + 1, month=1)
-    else:
-        end = start.replace(month=now.month + 1)
-
-    expenses = get_expenses(
-        user_ids=user_ids,
-        category=category,
-        ledger_type="" if include_special else "regular",
-        start=start.isoformat(),
-        end=end.isoformat(),
-        limit=limit,
-    )
-    label = _scope_label(scope, user_id)
-
-    items = [
-        {
-            "id": expense.id,
-            "user_name": expense.user_name,
-            "amount": expense.amount,
-            "currency": expense.currency,
-            "amount_sgd": expense.amount_sgd if expense.amount_sgd > 0 else expense.amount,
-            "note": expense.note,
-            "event_tag": expense.event_tag,
-            "ledger_type": expense.ledger_type,
-            "created_at": expense.created_at,
-        }
-        for expense in expenses
-    ]
-
-    return {
-        "success": True,
-        "label": label,
-        "category": category,
-        "items": items,
-        "count": len(items),
-        "currency": CURRENCY,
-        "includes_special": include_special,
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "items",
+        "period": "this_month",
+        "category": params.get("category", "其他"),
+        "limit": min(max(int(params.get("limit", 20)), 1), 100),
+        "include_special": bool(params.get("include_special", False)),
     }
+    return skill_query_period_spending(user_id, user_name, alias_params)
 
 
 def skill_query_recent_expenses(user_id: int, user_name: str, params: dict) -> dict:
@@ -358,63 +295,145 @@ def skill_query_recent_expenses(user_id: int, user_name: str, params: dict) -> d
 
 def skill_query_today_total(user_id: int, user_name: str, params: dict) -> dict:
     """Query today's total spending across me/spouse/family."""
-    scope = params.get("scope", "me")
-    include_special = bool(params.get("include_special", False))
-    return get_today_total(user_id=user_id, scope=scope, include_special=include_special)
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "total",
+        "period": "today",
+        "include_special": bool(params.get("include_special", False)),
+    }
+    result = skill_query_period_spending(user_id, user_name, alias_params)
+    if result.get("success"):
+        result["date"] = result.get("start_date")
+    return result
 
 
 def skill_query_today_items(user_id: int, user_name: str, params: dict) -> dict:
     """Query today's itemized expenses across me/spouse/family."""
-    scope = params.get("scope", "me")
-    limit = min(max(int(params.get("limit", 20)), 1), 50)
-    include_special = bool(params.get("include_special", False))
+    alias_params = {
+        "scope": params.get("scope", "me"),
+        "mode": "items",
+        "period": "today",
+        "category": str(params.get("category", "")).strip(),
+        "limit": min(max(int(params.get("limit", 20)), 1), 50),
+        "include_special": bool(params.get("include_special", False)),
+    }
+    result = skill_query_period_spending(user_id, user_name, alias_params)
+    if result.get("success"):
+        result["date"] = result.get("start_date")
+    return result
+
+
+def skill_query_period_spending(user_id: int, user_name: str, params: dict) -> dict:
+    """Query spending by flexible period for totals, items, or summaries."""
+    scope = str(params.get("scope", "me")).strip() or "me"
+    mode = str(params.get("mode", "total")).strip().lower() or "total"
+    period = str(params.get("period", "this_month")).strip().lower() or "this_month"
     category = str(params.get("category", "")).strip()
+    include_special = bool(params.get("include_special", False))
+    start_date = str(params.get("start_date", "")).strip()
+    end_date = str(params.get("end_date", "")).strip()
+    limit = min(max(int(params.get("limit", 20)), 1), 100)
+
+    raw_days = params.get("days")
+    try:
+        days = int(raw_days) if raw_days not in (None, "") else None
+    except (TypeError, ValueError):
+        return {"success": False, "message": "days 必须是整数"}
+
     if scope == "spouse" and get_spouse_id(user_id) is None:
         return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
+    if mode not in {"total", "items", "summary"}:
+        return {"success": False, "message": "mode 仅支持 total、items 或 summary"}
+
+    try:
+        period_info = resolve_period_range(
+            period=period,
+            start_date=start_date,
+            end_date=end_date,
+            days=days,
+        )
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
 
     user_ids = resolve_user_ids(scope, user_id)
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-
-    expenses = get_expenses(
-        user_ids=user_ids,
-        category=category,
-        ledger_type="" if include_special else "regular",
-        start=start.isoformat(),
-        end=end.isoformat(),
-        limit=limit,
-    )
     label = _scope_label(scope, user_id)
-    items = [
-        {
-            "id": expense.id,
-            "user_id": expense.user_id,
-            "user_name": expense.user_name,
-            "category": expense.category,
-            "amount": expense.amount,
-            "currency": expense.currency,
-            "amount_sgd": expense.amount_sgd if expense.amount_sgd > 0 else expense.amount,
-            "note": expense.note,
-            "event_tag": expense.event_tag,
-            "ledger_type": expense.ledger_type,
-            "created_at": expense.created_at,
+    start = period_info["start"]
+    end = period_info["end"]
+
+    if mode == "items":
+        expenses = get_expenses(
+            user_ids=user_ids,
+            category=category,
+            ledger_type="" if include_special else "regular",
+            start=start,
+            end=end,
+            limit=limit,
+        )
+        items = [_expense_to_item(expense) for expense in expenses]
+        total = sum(float(item["amount_sgd"]) for item in items)
+        return {
+            "success": True,
+            "label": label,
+            "scope": scope,
+            "mode": mode,
+            "period": period_info["period"],
+            "period_label": period_info["label"],
+            "start_date": period_info["start_date"],
+            "end_date": period_info["end_date"],
+            "category": category or None,
+            "items": items,
+            "count": len(items),
+            "total": round(total, 2),
+            "currency": CURRENCY,
+            "includes_special": include_special,
         }
-        for expense in expenses
-    ]
-    total = sum(float(item["amount_sgd"]) for item in items)
+
+    if mode == "summary":
+        summary = get_range_summary(
+            start=start,
+            end=end,
+            user_ids=user_ids,
+            include_special=include_special,
+        )
+        if category:
+            summary = [item for item in summary if str(item.get("category") or "") == category]
+        grand_total = sum(float(item["total"]) for item in summary)
+        return {
+            "success": True,
+            "label": label,
+            "scope": scope,
+            "mode": mode,
+            "period": period_info["period"],
+            "period_label": period_info["label"],
+            "start_date": period_info["start_date"],
+            "end_date": period_info["end_date"],
+            "category": category or None,
+            "summary": summary,
+            "grand_total": grand_total,
+            "currency": CURRENCY,
+            "includes_special": include_special,
+        }
+
+    total = get_range_total(
+        start=start,
+        end=end,
+        user_ids=user_ids,
+        include_special=include_special,
+        category=category,
+    )
     return {
         "success": True,
         "label": label,
         "scope": scope,
+        "mode": mode,
+        "period": period_info["period"],
+        "period_label": period_info["label"],
+        "start_date": period_info["start_date"],
+        "end_date": period_info["end_date"],
         "category": category or None,
-        "items": items,
-        "count": len(items),
-        "total": round(total, 2),
+        "total": total,
         "currency": CURRENCY,
         "includes_special": include_special,
-        "date": start.date().isoformat(),
     }
 
 
@@ -1178,6 +1197,7 @@ SKILL_MAP: dict[str, Any] = {
     "query_recent_expenses": skill_query_recent_expenses,
     "query_today_total": skill_query_today_total,
     "query_today_items": skill_query_today_items,
+    "query_period_spending": skill_query_period_spending,
     "query_summary": skill_query_summary,
     "set_budget": skill_set_budget,
     "query_budget": skill_query_budget,
@@ -1333,6 +1353,42 @@ TOOL_DEFINITIONS: list[dict] = [
                     "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
                 },
                 "required": ["scope"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_period_spending",
+            "description": "按灵活时间范围查询花费。支持今天、昨天、前天、本周、上周、本月、上个月、最近N天，以及自定义起止日期。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "查询范围", "enum": ["me", "spouse", "family"]},
+                    "mode": {"type": "string", "description": "返回总额、明细还是分类汇总", "enum": ["total", "items", "summary"]},
+                    "period": {
+                        "type": "string",
+                        "description": "预设时间范围。自定义日期时可传 custom 并配合 start_date/end_date。",
+                        "enum": [
+                            "today",
+                            "yesterday",
+                            "day_before_yesterday",
+                            "this_week",
+                            "last_week",
+                            "this_month",
+                            "last_month",
+                            "recent_days",
+                            "custom",
+                        ],
+                    },
+                    "days": {"type": "integer", "description": "当 period=recent_days 时填写天数，例如 7"},
+                    "start_date": {"type": "string", "description": "自定义开始日期，格式 YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "自定义结束日期，格式 YYYY-MM-DD"},
+                    "category": {"type": "string", "description": "可选：只看某个分类", "enum": ["", *CATEGORIES]},
+                    "limit": {"type": "integer", "description": "mode=items 时最多返回多少条，默认20"},
+                    "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},
+                },
+                "required": ["scope", "mode"],
             },
         },
     },
@@ -1603,6 +1659,22 @@ TOOL_DEFINITIONS: list[dict] = [
 # ═══════════════════════════════════════════
 #  Helpers
 # ═══════════════════════════════════════════
+
+def _expense_to_item(expense: Expense) -> dict[str, Any]:
+    return {
+        "id": expense.id,
+        "user_id": expense.user_id,
+        "user_name": expense.user_name,
+        "category": expense.category,
+        "amount": expense.amount,
+        "currency": expense.currency,
+        "amount_sgd": expense.amount_sgd if expense.amount_sgd > 0 else expense.amount,
+        "note": expense.note,
+        "event_tag": expense.event_tag,
+        "ledger_type": expense.ledger_type,
+        "created_at": expense.created_at,
+    }
+
 
 def _scope_label(scope: str, my_user_id: int) -> str:
     if scope == "me":

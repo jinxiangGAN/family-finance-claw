@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from zoneinfo import ZoneInfo
@@ -11,6 +11,10 @@ from app.config import CURRENCY, FAMILY_MEMBERS, TIMEZONE
 from app.database import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _start_of_day(value: datetime) -> datetime:
+    return value.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def _month_range() -> tuple[str, str]:
@@ -23,6 +27,96 @@ def _month_range() -> tuple[str, str]:
     else:
         end = start.replace(month=now.month + 1)
     return start.isoformat(), end.isoformat()
+
+
+def resolve_period_range(
+    *,
+    period: str = "this_month",
+    start_date: str = "",
+    end_date: str = "",
+    days: Optional[int] = None,
+) -> dict[str, str]:
+    """Resolve a named or explicit period into ISO start/end bounds."""
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    normalized_period = str(period or "this_month").strip().lower()
+
+    if start_date or end_date:
+        if not start_date or not end_date:
+            raise ValueError("start_date and end_date must be provided together")
+        try:
+            start_day = date.fromisoformat(start_date)
+            end_day = date.fromisoformat(end_date)
+        except ValueError as exc:
+            raise ValueError("start_date/end_date must use YYYY-MM-DD") from exc
+        if end_day < start_day:
+            raise ValueError("end_date must be on or after start_date")
+
+        start = datetime(start_day.year, start_day.month, start_day.day, tzinfo=tz)
+        end_exclusive = end_day + timedelta(days=1)
+        end = datetime(end_exclusive.year, end_exclusive.month, end_exclusive.day, tzinfo=tz)
+        label = start_date if start_date == end_date else f"{start_date} 到 {end_date}"
+        return {
+            "period": "custom",
+            "label": label,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "start_date": start_day.isoformat(),
+            "end_date": end_day.isoformat(),
+        }
+
+    today_start = _start_of_day(now)
+    if normalized_period == "today":
+        start = today_start
+        end = start + timedelta(days=1)
+        label = "今天"
+    elif normalized_period == "yesterday":
+        start = today_start - timedelta(days=1)
+        end = today_start
+        label = "昨天"
+    elif normalized_period == "day_before_yesterday":
+        start = today_start - timedelta(days=2)
+        end = today_start - timedelta(days=1)
+        label = "前天"
+    elif normalized_period == "this_week":
+        start = today_start - timedelta(days=today_start.weekday())
+        end = start + timedelta(days=7)
+        label = "本周"
+    elif normalized_period == "last_week":
+        end = today_start - timedelta(days=today_start.weekday())
+        start = end - timedelta(days=7)
+        label = "上周"
+    elif normalized_period == "this_month":
+        start = today_start.replace(day=1)
+        if start.month == 12:
+            end = start.replace(year=start.year + 1, month=1)
+        else:
+            end = start.replace(month=start.month + 1)
+        label = "本月"
+    elif normalized_period == "last_month":
+        this_month_start = today_start.replace(day=1)
+        end = this_month_start
+        last_month_last_day = this_month_start - timedelta(days=1)
+        start = last_month_last_day.replace(day=1)
+        label = "上个月"
+    elif normalized_period == "recent_days":
+        window_days = int(days or 0)
+        if window_days <= 0:
+            raise ValueError("days must be greater than 0 when period is recent_days")
+        start = today_start - timedelta(days=max(window_days - 1, 0))
+        end = now
+        label = f"最近{window_days}天"
+    else:
+        raise ValueError(f"Unsupported period: {period}")
+
+    return {
+        "period": normalized_period,
+        "label": label,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "start_date": start.date().isoformat(),
+        "end_date": (end - timedelta(microseconds=1)).date().isoformat(),
+    }
 
 
 def _range_summary(
@@ -85,6 +179,53 @@ def _range_total(
     with get_connection() as conn:
         row = conn.execute(sql, params).fetchone()
     return float(row["total"])
+
+
+def get_range_total(
+    *,
+    start: str,
+    end: str,
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+    category: str = "",
+) -> float:
+    """Get total spending for an arbitrary time range."""
+    if not category:
+        return _range_total(user_ids=user_ids, include_special=include_special, start=start, end=end)
+
+    sum_expr = "COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0)"
+    ledger_clause = "" if include_special else "AND ledger_type = 'regular' "
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        sql = (
+            f"SELECT {sum_expr} AS total FROM expenses "
+            f"WHERE user_id IN ({placeholders}) AND category = ? "
+            f"{ledger_clause}"
+            f"AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
+        )
+        params = [*user_ids, category, start, end]
+    else:
+        sql = (
+            f"SELECT {sum_expr} AS total FROM expenses "
+            f"WHERE category = ? {ledger_clause}"
+            "AND datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)"
+        )
+        params = [category, start, end]
+
+    with get_connection() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return float(row["total"])
+
+
+def get_range_summary(
+    *,
+    start: str,
+    end: str,
+    user_ids: Optional[list[int]] = None,
+    include_special: bool = False,
+) -> list[dict]:
+    """Get category summary for an arbitrary time range."""
+    return _range_summary(user_ids=user_ids, include_special=include_special, start=start, end=end)
 
 
 def get_spouse_id(my_user_id: int) -> Optional[int]:
@@ -173,17 +314,12 @@ def get_last_n_days_total(
     include_special: bool = False,
 ) -> float:
     """Get total expense amount for the trailing N-day window."""
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    end = now
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    from datetime import timedelta
-    start = start - timedelta(days=max(days - 1, 0))
+    period_info = resolve_period_range(period="recent_days", days=days)
     return _range_total(
         user_ids=user_ids,
         include_special=include_special,
-        start=start.isoformat(),
-        end=end.isoformat(),
+        start=period_info["start"],
+        end=period_info["end"],
     )
 
 
@@ -193,17 +329,12 @@ def get_last_n_days_summary(
     include_special: bool = False,
 ) -> list[dict]:
     """Get category summary for the trailing N-day window."""
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    end = now
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    from datetime import timedelta
-    start = start - timedelta(days=max(days - 1, 0))
+    period_info = resolve_period_range(period="recent_days", days=days)
     return _range_summary(
         user_ids=user_ids,
         include_special=include_special,
-        start=start.isoformat(),
-        end=end.isoformat(),
+        start=period_info["start"],
+        end=period_info["end"],
     )
 
 

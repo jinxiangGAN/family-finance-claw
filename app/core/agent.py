@@ -27,6 +27,15 @@ from app.core.resident_agent import DEFAULT_RESIDENT_AGENT_SERVICE
 from app.core.observability import log_event
 from app.core.session import Session
 from app.mcp_tools.registry import execute_tool
+from app.services.family_message_parser import looks_like_forward_message_request
+from app.services.query_period_parser import (
+    DATE_RANGE_RE,
+    RECENT_DAYS_RE,
+    SINGLE_DATE_RE,
+    extract_period_phrase as _extract_period_phrase,
+    extract_query_category as _extract_query_category,
+    is_detail_query_text as _looks_like_detail_query_text,
+)
 from app.services.expense_service import get_expenses, get_recent_expenses
 
 logger = logging.getLogger(__name__)
@@ -133,7 +142,10 @@ _TODAY_TOTAL_RE = re.compile(
     r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今日|今天)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:所有)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"
 )
 _DETAIL_QUERY_RE = re.compile(
-    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今天|今日|本月|这个月|最近)?(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
+    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?"
+    r"(?:(?:今天|今日|昨天|昨日|前天|本周|这周|这星期|本星期|上周|上星期|本月|这个月|上月|上个月|最近(?:\d+)?天|近\d+天)"
+    r"|(?:\d{4}-\d{1,2}-\d{1,2})(?:\s*(?:到|至|—|–|-|~)\s*\d{4}-\d{1,2}-\d{1,2})?)?"
+    r"(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
 )
 _BUDGET_QUERY_RE = re.compile(
     r"^\s*(?:"
@@ -143,14 +155,6 @@ _BUDGET_QUERY_RE = re.compile(
     r"|(?:[\u4e00-\u9fffA-Za-z_]+)预算(?:是多少|多少|还剩多少|怎么样|情况)?"
     r")\s*[？?]?\s*$"
 )
-_FORWARD_MESSAGE_PATTERNS = [
-    re.compile(
-        r"^\s*(?:帮我)?给\s*(?P<target>[^\s,，:：]+)\s*(?:发消息|发|带句话|说一声|说)\s*[:：,，]?\s*(?P<body>.+?)\s*$"
-    ),
-    re.compile(
-        r"^\s*(?:发消息给|发给|转告|转发给|跟)\s*(?P<target>[^\s,，:：]+)\s*(?:说|讲一下|带句话)?\s*[:：,，]?\s*(?P<body>.+?)\s*$"
-    ),
-]
 _FAST_WORKBENCH_INTENTS = {
     "exchange_rate",
     "delete_by_id",
@@ -169,6 +173,7 @@ _SHORT_QUERY_SKILL_NAMES = {
     "query_category_total",
     "query_category_items",
     "query_recent_expenses",
+    "query_period_spending",
     "query_summary",
     "query_budget",
 }
@@ -273,8 +278,42 @@ def _looks_like_short_query_turn(text: str) -> bool:
         for pattern in (_RECENT_EXPENSES_RE, _TODAY_TOTAL_RE, _MONTH_TOTAL_RE, _DETAIL_QUERY_RE, _BUDGET_QUERY_RE)
     ):
         return True
-    if any(token in stripped for token in ("花费", "花销", "开销", "支出", "消费", "明细", "细则", "汇总", "预算")) and any(
-        token in stripped for token in ("今天", "今日", "本月", "这个月", "最近", "小白", "小鸡毛", "全家", "家庭", "多少", "看看", "查看", "查")
+    if any(
+        token in stripped
+        for token in ("花费", "花销", "开销", "支出", "消费", "明细", "细则", "汇总", "预算", "花了多少", "一共花了多少")
+    ) and (
+        any(
+            token in stripped
+            for token in (
+                "今天",
+                "今日",
+                "昨天",
+                "昨日",
+                "前天",
+                "本周",
+                "这周",
+                "这星期",
+                "本星期",
+                "上周",
+                "上星期",
+                "本月",
+                "这个月",
+                "上月",
+                "上个月",
+                "最近",
+                "近7天",
+                "近30天",
+                "小白",
+                "小鸡毛",
+                "全家",
+                "家庭",
+                "多少",
+                "看看",
+                "查看",
+                "查",
+            )
+        )
+        or bool(re.search(r"\d{4}-\d{1,2}-\d{1,2}", stripped))
     ):
         return True
     return False
@@ -729,13 +768,40 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
     stripped = text.strip()
     if image_path:
         return None
-    if any(pattern.match(stripped) for pattern in _FORWARD_MESSAGE_PATTERNS):
+    if looks_like_forward_message_request(stripped, sender_user_id=0):
         return "forward_message"
     if _DELETE_BY_ID_RE.match(stripped):
         return "delete_by_id"
     if _looks_like_exchange_rate_query(stripped):
         return "exchange_rate"
     return None
+
+
+def _build_scoped_followup_query(subject: str, period_phrase: str, category: str, detail: bool) -> str:
+    connector = "" if period_phrase in {"今天", "昨天", "前天", "本周", "上周", "本月", "上个月"} else "在"
+    prefix = f"查看{subject}{connector}{period_phrase}的"
+    if detail:
+        suffix = f"{category}明细" if category else "花费明细"
+    else:
+        suffix = f"{category}花费" if category else "花费"
+    return prefix + suffix
+
+
+def _rewrite_scope_followup_from_previous(previous: str, subject: str) -> Optional[str]:
+    if "预算" in previous:
+        return None
+    period_phrase = _extract_period_phrase(previous)
+    if not period_phrase:
+        return None
+    detail = _looks_like_detail_query_text(previous)
+    category = _extract_query_category(previous)
+    total_like = any(
+        token in previous
+        for token in ("花费", "花销", "开销", "支出", "消费", "花了多少", "一共花了多少", "多少", "汇总")
+    )
+    if not detail and not total_like and not category:
+        return None
+    return _build_scoped_followup_query(subject, period_phrase, category, detail)
 
 
 def _rewrite_scope_followup(text: str, history: list[dict[str, str]]) -> str:
@@ -747,41 +813,33 @@ def _rewrite_scope_followup(text: str, history: list[dict[str, str]]) -> str:
             if item.get("role") != "user":
                 continue
             previous = str(item.get("content") or "").strip()
-            if _TODAY_TOTAL_RE.match(previous):
-                return "查看今天全家的花费"
-            if _MONTH_TOTAL_RE.match(previous):
-                return "查看本月全家的花费"
+            rewritten = _rewrite_scope_followup_from_previous(previous, "全家")
+            if rewritten:
+                return rewritten
     if any(token in stripped for token in ("包括小鸡毛", "算上小鸡毛", "加上小鸡毛", "带上小鸡毛")):
         for item in reversed(history):
             if item.get("role") != "user":
                 continue
             previous = str(item.get("content") or "").strip()
-            if _TODAY_TOTAL_RE.match(previous):
-                return "查看今天全家的花费"
-            if _MONTH_TOTAL_RE.match(previous):
-                return "查看本月全家的花费"
+            rewritten = _rewrite_scope_followup_from_previous(previous, "全家")
+            if rewritten:
+                return rewritten
     if any(token in stripped for token in ("只看小白", "只查小白", "只要小白", "不要全家，只看小白", "不要全家只看小白")):
         for item in reversed(history):
             if item.get("role") != "user":
                 continue
             previous = str(item.get("content") or "").strip()
-            if _TODAY_TOTAL_RE.match(previous):
-                return "查看小白今天花费"
-            if _MONTH_TOTAL_RE.match(previous):
-                return "查看小白本月花费"
-            if _DETAIL_QUERY_RE.match(previous):
-                return "查看小白的花费明细"
+            rewritten = _rewrite_scope_followup_from_previous(previous, "小白")
+            if rewritten:
+                return rewritten
     if any(token in stripped for token in ("只看小鸡毛", "只查小鸡毛", "只要小鸡毛", "不要全家，只看小鸡毛", "不要全家只看小鸡毛")):
         for item in reversed(history):
             if item.get("role") != "user":
                 continue
             previous = str(item.get("content") or "").strip()
-            if _TODAY_TOTAL_RE.match(previous):
-                return "查看小鸡毛今天花费"
-            if _MONTH_TOTAL_RE.match(previous):
-                return "查看小鸡毛本月花费"
-            if _DETAIL_QUERY_RE.match(previous):
-                return "查看小鸡毛的花费明细"
+            rewritten = _rewrite_scope_followup_from_previous(previous, "小鸡毛")
+            if rewritten:
+                return rewritten
     return stripped
 
 
@@ -981,6 +1039,7 @@ You have exactly two output modes and must choose one:
 <ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"record_expense","params":{{"category":"餐饮","amount":20,"currency":"SGD","note":"午饭","owner_user_id":{{小白的用户id}},"owner_user_name":"小白"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"me"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"family","mode":"total","period":"this_week"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"set_budget","params":{{"categories":["餐饮","交通","超市"],"budget_name":"三项日常预算","amount":2000}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"set_recurring_rule","params":{{"name":"房租","category":"房租","amount":4500,"due_day":1,"shared":true}}}}</ACTION>
@@ -1471,6 +1530,9 @@ You must do exactly one of these:
 <ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"spouse"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_today_items","params":{{"scope":"family"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"total","period":"yesterday"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"family","mode":"items","period":"this_week"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"total","period":"recent_days","days":7}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_monthly_total","params":{{"scope":"me"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"family"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_category_total","params":{{"scope":"spouse","category":"餐饮"}}}}</ACTION>
@@ -1487,14 +1549,16 @@ Rules:
    - `me` for the current sender
    - `spouse` when the sender is asking about the other family member (`小白` or `小鸡毛`)
    - `family` for `全家` / `家庭` / `我们`
-4. For `今天/今日` total questions, prefer `query_today_total`.
-5. For `今天/今日` expense-list style questions, prefer `query_today_items`.
-6. For `本月/这个月` total questions, prefer `query_monthly_total`.
-7. For `明细/细则`, prefer `query_today_items`, `query_category_items`, or `query_recent_expenses` depending on the wording.
-8. For category total questions such as `餐饮花了多少`, prefer `query_category_total`.
-9. For budget questions, prefer `query_budget`.
-10. If the wording is understandable enough for one query action, do not ask a clarification question.
-11. Output only `<ACTION>` or `<FINAL>`.
+4. For flexible period questions such as `昨天/前天/本周/上周/上个月/最近7天`, prefer `query_period_spending`.
+5. Use `mode=total` for totals, `mode=items` for detail/item-list wording, and `mode=summary` for category breakdown wording.
+6. Use `period` values like `today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`, or `recent_days`.
+7. When `period=recent_days`, include `days`.
+8. For category-specific questions, include `category`.
+9. For very simple `今天/今日` total questions, `query_today_total` is still okay; for `今天/今日` item lists, `query_today_items` is still okay.
+10. For `本月/这个月` total questions, `query_monthly_total` is still okay.
+11. For budget questions, prefer `query_budget`.
+12. If the wording is understandable enough for one query action, do not ask a clarification question.
+13. Output only `<ACTION>` or `<FINAL>`.
 
 Environment:
 - Current time: {now}

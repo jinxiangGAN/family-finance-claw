@@ -16,8 +16,8 @@ from typing import Any
 from app.config import CATEGORIES, CURRENCY, FAMILY_MEMBERS
 from app.database import init_db
 from app.core.observability import log_event, timed_event
-from app.services.expense_service import get_today_total
 from app.services.fx_service import normalize_currency_code
+from app.services.query_period_parser import extract_query_category, infer_period_params
 from app.services.skills import execute_skill
 from app.services.stats_service import get_spouse_id, get_member_name
 
@@ -43,7 +43,10 @@ _MONTH_TOTAL_RE = re.compile(
     r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:这个月|本月)(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:我|我们|家庭|全家)?(?:总共)?(?:花费|花销|开销|支出|消费|花了多少|一共花了多少|多少)\s*[？?]?\s*$"
 )
 _DETAIL_RE = re.compile(
-    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?(?:今天|今日|本月|这个月|最近)?(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
+    r"^\s*(?:查看|看看|查下|查一下)?(?:[\u4e00-\u9fffA-Za-z_]+的?)?"
+    r"(?:(?:今天|今日|昨天|昨日|前天|本周|这周|这星期|本星期|上周|上星期|本月|这个月|上月|上个月|最近(?:\d+)?天|近\d+天)"
+    r"|(?:\d{4}-\d{1,2}-\d{1,2})(?:\s*(?:到|至|—|–|-|~)\s*\d{4}-\d{1,2}-\d{1,2})?)?"
+    r"(?:花费|花销|开销|支出|消费)?(?:明细|细则)\s*[？?]?\s*$"
 )
 _BUDGET_SET_RE = re.compile(
     r"^\s*(?P<category>[\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(?P<amount>\d+(?:\.\d+)?)(?:\s*(?P<currency>[A-Za-z]{3}|元|块|人民币))?\s*$"
@@ -187,22 +190,32 @@ def _parse_recent_expenses(text: str, user_id: int) -> dict[str, Any]:
         "ledger_type": "special" if "专项" in text else "",
     }
 
+def _parse_total_query(text: str, user_id: int, *, default_period: str) -> dict[str, Any]:
+    params = {
+        "scope": _infer_scope(text, user_id),
+        "mode": "total",
+        "include_special": _infer_include_special(text),
+    }
+    params.update(infer_period_params(text, default_period)[0])
+    category = extract_query_category(text)
+    if category:
+        params["category"] = category
+    return params
+
 
 def _parse_expense_details(text: str, user_id: int) -> dict[str, Any]:
     scope = _infer_scope(text, user_id)
     include_special = _infer_include_special(text)
-    category = ""
-    for item in CATEGORIES:
-        if item in text:
-            category = item
-            break
-    if category:
+    category = extract_query_category(text)
+    period_params, has_explicit_period = infer_period_params(text, "this_month" if category else "today")
+    if category or has_explicit_period:
         return {
-            "mode": "category",
+            "mode": "items",
             "scope": scope,
-            "category": category,
+            "category": category or "",
             "limit": 20,
             "include_special": include_special,
+            **period_params,
         }
     return {
         "mode": "recent",
@@ -213,17 +226,11 @@ def _parse_expense_details(text: str, user_id: int) -> dict[str, Any]:
 
 
 def _parse_month_total(text: str, user_id: int) -> dict[str, Any]:
-    return {
-        "scope": _infer_scope(text, user_id),
-        "include_special": _infer_include_special(text),
-    }
+    return _parse_total_query(text, user_id, default_period="this_month")
 
 
 def _parse_today_total(text: str, user_id: int) -> dict[str, Any]:
-    return {
-        "scope": _infer_scope(text, user_id),
-        "include_special": _infer_include_special(text),
-    }
+    return _parse_total_query(text, user_id, default_period="today")
 
 
 def _parse_budget_query(text: str) -> dict[str, Any]:
@@ -287,34 +294,17 @@ def _render_recent_expenses(result: dict[str, Any]) -> str:
 
 
 def _render_expense_details(result: dict[str, Any]) -> str:
+    if result.get("period_label"):
+        return _render_period_items(result)
     return _render_recent_expenses(result)
 
 
 def _render_month_total(result: dict[str, Any]) -> str:
-    label = result.get("label", "本月")
-    total = float(result.get("total", 0))
-    currency = result.get("currency", CURRENCY)
-    if result.get("includes_special"):
-        return f"{label}本月合计（含专项）是 {total:.2f} {currency}。"
-    return f"{label}本月合计是 {total:.2f} {currency}。"
+    return _render_period_total(result)
 
 
 def _render_today_total(result: dict[str, Any]) -> str:
-    scope = str(result.get("scope") or "me")
-    label = str(result.get("label") or "").strip()
-    if not label:
-        label = {
-            "me": "今天",
-            "spouse": "配偶今天",
-            "family": "今天家庭",
-        }.get(scope, "今天")
-    elif scope != "family":
-        label = f"{label}今天"
-    total = float(result.get("total", 0))
-    currency = str(result.get("currency") or CURRENCY)
-    if result.get("includes_special"):
-        return f"{label}合计（含专项）是 {total:.2f} {currency}。"
-    return f"{label}合计是 {total:.2f} {currency}。"
+    return _render_period_total(result)
 
 
 def _render_budget_query(result: dict[str, Any]) -> str:
@@ -347,12 +337,58 @@ def _render_exchange_rate(result: dict[str, Any]) -> str:
     return str(result.get("message") or "这次没查到汇率。")
 
 
+def _subject_with_period(result: dict[str, Any]) -> str:
+    label = str(result.get("label") or "").strip() or "我"
+    if label == "家庭":
+        label = "全家"
+    period_label = str(result.get("period_label") or "").strip()
+    simple_periods = {"今天", "昨天", "前天", "本周", "上周", "本月", "上个月"}
+    if not period_label:
+        return label
+    if period_label in simple_periods:
+        return f"{label}{period_label}"
+    return f"{label}在{period_label}"
+
+
+def _render_period_total(result: dict[str, Any]) -> str:
+    subject = _subject_with_period(result)
+    category = str(result.get("category") or "").strip()
+    total = float(result.get("total", 0))
+    currency = str(result.get("currency") or CURRENCY)
+    suffix = f"的{category}合计" if category else "合计"
+    if result.get("includes_special"):
+        return f"{subject}{suffix}（含专项）是 {total:.2f} {currency}。"
+    return f"{subject}{suffix}是 {total:.2f} {currency}。"
+
+
+def _render_period_items(result: dict[str, Any]) -> str:
+    items = result.get("items") or []
+    subject = _subject_with_period(result)
+    category = str(result.get("category") or "").strip()
+    if not items:
+        if category:
+            return f"{subject}的{category}明细里没有找到相关账目。"
+        return f"{subject}没有找到相关账目。"
+
+    title = f"{subject}的{category}明细" if category else f"{subject}的花费明细"
+    lines = [f"{title}（{len(items)} 笔）："]
+    for item in items[:10]:
+        lines.append(
+            f"#{item['id']} {item['user_name']} / {item['category']} {float(item['amount']):.2f} {item['currency']}"
+            f"{' / ' + item['note'] if item.get('note') else ''}"
+        )
+    total = result.get("total")
+    if total is not None:
+        lines.append(f"合计 {float(total):.2f} {result.get('currency', CURRENCY)}")
+    return "\n".join(lines)
+
+
 _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "record_expense": ("record_expense", _parse_record_expense),
     "recent_expenses": ("query_recent_expenses", _parse_recent_expenses),
-    "expense_details": ("query_recent_expenses", _parse_expense_details),
-    "month_total": ("query_monthly_total", _parse_month_total),
-    "today_total": ("query_today_total", _parse_today_total),
+    "expense_details": ("query_period_spending", _parse_expense_details),
+    "month_total": ("query_period_spending", _parse_month_total),
+    "today_total": ("query_period_spending", _parse_today_total),
     "exchange_rate": ("query_exchange_rate", _parse_exchange_rate),
     "budget_query": ("query_budget", _parse_budget_query),
     "budget_set": ("set_budget", _parse_budget_set),
@@ -398,31 +434,22 @@ def run_workbench_action(action: str, user_id: int, user_name: str, text: str) -
         skill_name=skill_name,
         user_id=effective_user_id,
     ):
-        if action == "today_total":
-            raw_result = get_today_total(
-                user_id=effective_user_id,
-                scope=str(params.get("scope") or "me"),
-                include_special=bool(params.get("include_special", False)),
-            )
-            raw_result["label"] = get_member_name(effective_user_id) if raw_result.get("scope") == "me" else (
-                get_member_name(get_spouse_id(effective_user_id)) if raw_result.get("scope") == "spouse" and get_spouse_id(effective_user_id) is not None else "家庭"
-            )
-        elif action == "expense_details":
-            if str(params.get("mode") or "") == "category":
-                raw_result = execute_skill("query_category_items", effective_user_id, effective_user_name, {
-                    "scope": params.get("scope", "me"),
-                    "category": params.get("category", "其他"),
-                    "limit": params.get("limit", 20),
-                    "include_special": bool(params.get("include_special", False)),
-                })
-            else:
-                raw_result = execute_skill("query_recent_expenses", effective_user_id, effective_user_name, {
-                    "scope": params.get("scope", "me"),
-                    "limit": params.get("limit", 20),
-                    "ledger_type": params.get("ledger_type", ""),
-                })
+        if action == "expense_details" and str(params.get("mode") or "") == "recent":
+            raw_result = execute_skill("query_recent_expenses", effective_user_id, effective_user_name, {
+                "scope": params.get("scope", "me"),
+                "limit": params.get("limit", 20),
+                "ledger_type": params.get("ledger_type", ""),
+            })
         else:
             raw_result = execute_skill(skill_name, effective_user_id, effective_user_name, params)
+        if action == "expense_details" and str(params.get("mode") or "") != "recent":
+            raw_result["label"] = str(raw_result.get("label") or get_member_name(effective_user_id))
+        elif action in {"month_total", "today_total"}:
+            raw_result["label"] = str(raw_result.get("label") or (
+                get_member_name(effective_user_id) if raw_result.get("scope") == "me"
+                else get_member_name(get_spouse_id(effective_user_id)) if raw_result.get("scope") == "spouse" and get_spouse_id(effective_user_id) is not None
+                else "家庭"
+            ))
     renderer = _WORKBENCH_RENDERERS[action]
     success = bool(raw_result.get("success", False))
     reply = renderer(raw_result) if success else str(raw_result.get("message") or "这次操作失败了。")

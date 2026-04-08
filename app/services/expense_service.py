@@ -2,15 +2,17 @@
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
 from typing import Optional
 
-from zoneinfo import ZoneInfo
-
-from app.config import CURRENCY, TIMEZONE
+from app.config import CURRENCY
 from app.database import get_connection
 from app.models.expense import Expense
-from app.services.stats_service import get_spouse_id, resolve_user_ids
+from app.services.stats_service import (
+    get_range_total,
+    get_spouse_id,
+    resolve_period_range,
+    resolve_user_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,35 +140,20 @@ def get_today_total(
         return {"success": False, "message": "未配置配偶账号，无法查询配偶账单"}
 
     user_ids = resolve_user_ids(scope, user_id)
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
-
-    conditions = ["datetime(created_at) >= datetime(?)", "datetime(created_at) < datetime(?)"]
-    params: list[object] = [start.isoformat(), end.isoformat()]
-
-    if user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        conditions.append(f"user_id IN ({placeholders})")
-        params.extend(user_ids)
-    if not include_special:
-        conditions.append("ledger_type = 'regular'")
-
-    sql = (
-        "SELECT COALESCE(SUM(CASE WHEN amount_sgd > 0 THEN amount_sgd ELSE amount END), 0) AS total "
-        f"FROM expenses WHERE {' AND '.join(conditions)}"
+    period_info = resolve_period_range(period="today")
+    total = get_range_total(
+        start=period_info["start"],
+        end=period_info["end"],
+        user_ids=user_ids,
+        include_special=include_special,
     )
-    with get_connection() as conn:
-        row = conn.execute(sql, params).fetchone()
-    total = float(row["total"]) if row is not None else 0.0
     return {
         "success": True,
         "scope": scope,
         "total": total,
         "currency": CURRENCY,
         "includes_special": include_special,
-        "date": start.date().isoformat(),
+        "date": period_info["start_date"],
     }
 
 
