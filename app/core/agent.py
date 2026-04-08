@@ -159,12 +159,20 @@ _FAST_WORKBENCH_INTENTS = {
     "exchange_rate",
     "delete_by_id",
     "forward_message",
+    "recent_expenses",
+    "expense_details",
+    "period_total",
+    "budget_query",
 }
 
 _FAST_INTENT_ACTIONS: dict[str, str] = {
     "exchange_rate": "finance.exchange_rate",
     "delete_by_id": "finance.delete_by_id",
     "forward_message": "family.forward_message",
+    "recent_expenses": "finance.recent_expenses",
+    "expense_details": "finance.expense_details",
+    "period_total": "finance.month_total",
+    "budget_query": "finance.budget_query",
 }
 _SHORT_QUERY_SKILL_NAMES = {
     "query_today_total",
@@ -773,6 +781,27 @@ def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> 
         return None
     if looks_like_forward_message_request(stripped, sender_user_id=0):
         return "forward_message"
+    if _looks_like_budget_query(stripped):
+        return "budget_query"
+    if _RECENT_EXPENSES_RE.match(stripped):
+        return "recent_expenses"
+    if _looks_like_detail_query_text(stripped) and (
+        _extract_period_phrase(stripped) is not None
+        or bool(_extract_query_category(stripped))
+        or bool(_DETAIL_QUERY_RE.match(stripped))
+    ):
+        return "expense_details"
+    if not _looks_like_detail_query_text(stripped) and not _looks_like_budget_query(stripped):
+        total_like = any(
+            token in stripped
+            for token in ("花费", "花销", "开销", "支出", "消费", "花了多少", "一共花了多少", "多少")
+        )
+        scope_or_filter_like = any(
+            token in stripped
+            for token in ("小白", "小鸡毛", "全家", "家庭", "我们", "老婆", "老公", "配偶", "另一半", "对象")
+        ) or bool(_extract_query_category(stripped)) or _extract_period_phrase(stripped) is not None
+        if total_like and scope_or_filter_like:
+            return "period_total"
     if _DELETE_BY_ID_RE.match(stripped):
         return "delete_by_id"
     if _looks_like_exchange_rate_query(stripped):
@@ -1705,6 +1734,10 @@ def _build_fast_prompt(
         "exchange_rate": ("finance.exchange_rate", "simple exchange-rate query"),
         "delete_by_id": ("finance.delete_by_id", "simple delete-by-id"),
         "forward_message": ("family.forward_message", "simple family message forwarding"),
+        "recent_expenses": ("finance.recent_expenses", "simple recent-expenses query"),
+        "expense_details": ("finance.expense_details", "simple expense detail query"),
+        "period_total": ("finance.month_total", "simple spending-total query"),
+        "budget_query": ("finance.budget_query", "simple budget query"),
     }[fast_intent]
     return f"""Fast workbench turn for `小灰毛`.
 

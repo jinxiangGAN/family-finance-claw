@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _ACTION_MAP: dict[str, tuple[str, str]] = {
     "finance.record_expense": ("finance", "record_expense"),
     "finance.recent_expenses": ("finance", "recent_expenses"),
+    "finance.expense_details": ("finance", "expense_details"),
     "finance.month_total": ("finance", "month_total"),
     "finance.today_total": ("finance", "today_total"),
     "finance.exchange_rate": ("finance", "exchange_rate"),
