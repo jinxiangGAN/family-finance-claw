@@ -276,6 +276,10 @@ def _parse_delete_by_id(text: str) -> dict[str, Any]:
     }
 
 
+def _parse_delete_last(text: str) -> dict[str, Any]:
+    return {}
+
+
 def _render_record_expense(result: dict[str, Any]) -> str:
     return str(result.get("confirmation") or result.get("message") or "已记录。")
 
@@ -331,6 +335,10 @@ def _render_budget_set(result: dict[str, Any]) -> str:
 
 def _render_delete_by_id(result: dict[str, Any]) -> str:
     return str(result.get("confirmation") or result.get("message") or "已删除。")
+
+
+def _render_delete_last(result: dict[str, Any]) -> str:
+    return str(result.get("confirmation") or result.get("message") or "已撤销最后一笔。")
 
 
 def _render_exchange_rate(result: dict[str, Any]) -> str:
@@ -392,6 +400,7 @@ _WORKBENCH_ACTIONS: dict[str, tuple[str, Any]] = {
     "exchange_rate": ("query_exchange_rate", _parse_exchange_rate),
     "budget_query": ("query_budget", _parse_budget_query),
     "budget_set": ("set_budget", _parse_budget_set),
+    "delete_last": ("delete_last_expense", _parse_delete_last),
     "delete_by_id": ("delete_expense_by_id", _parse_delete_by_id),
 }
 
@@ -404,6 +413,7 @@ _WORKBENCH_RENDERERS: dict[str, Any] = {
     "exchange_rate": _render_exchange_rate,
     "budget_query": _render_budget_query,
     "budget_set": _render_budget_set,
+    "delete_last": _render_delete_last,
     "delete_by_id": _render_delete_by_id,
 }
 

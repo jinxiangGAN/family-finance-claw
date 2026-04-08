@@ -113,6 +113,11 @@ _DELETE_BY_DESC_RE = re.compile(
     r"^\s*删除\s*(\d+(?:\.\d+)?)\s*(?:块|元|rmb|cny|sgd|usd)?\s*([^#\n\r]*)?(?:那笔|这一笔|那条|这条)?\s*$",
     re.IGNORECASE,
 )
+_RECORDED_EXPENSE_LINE_RE = re.compile(
+    r"^\s*[✅☑]?\s*已记录[:：]\s*(?P<category>\S+)\s+(?P<amount>\d+(?:\.\d+)?)\s+(?P<currency>[A-Za-z]{3}|元|块|人民币)\s*$"
+)
+_RECORDED_OWNER_LINE_RE = re.compile(r"^\s*[👤]?\s*归属[:：]\s*(?P<user_name>.+?)\s*$")
+_RECORDED_NOTE_LINE_RE = re.compile(r"^\s*[📝]?\s*备注[:：]\s*(?P<note>.+?)\s*$")
 _BUDGET_SET_RE = re.compile(
     r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(\d+(?:\.\d+)?)(?:\s*(?:[A-Za-z]{3}|元|块|人民币))?\s*$"
 )
@@ -481,6 +486,8 @@ def _detect_write_action(text: str, image_path: Optional[str] = None) -> Optiona
     stripped = text.strip()
     if not stripped:
         return None
+    if _looks_like_recorded_expense_message(stripped):
+        return None
     if _looks_like_budget_write(stripped):
         return "update a budget"
     if _ARCHIVE_MEMORY_RE.match(stripped):
@@ -515,30 +522,117 @@ def _matches_delete_hint(expense, hint: str) -> bool:
     return any(normalized in hay for hay in haystacks if hay)
 
 
-def _find_delete_candidates(text: str, user_id: int) -> list[dict[str, object]]:
-    match = _DELETE_BY_DESC_RE.match(text.strip())
-    if not match:
+def _normalize_delete_currency(raw: str) -> str:
+    value = raw.strip().upper()
+    if value in {"元", "块"}:
+        return CURRENCY
+    if value == "人民币":
+        return "CNY"
+    return value
+
+
+def _expense_to_delete_candidate(expense) -> dict[str, object]:
+    return {
+        "id": expense.id,
+        "user_name": expense.user_name,
+        "category": expense.category,
+        "amount": expense.amount,
+        "currency": expense.currency,
+        "note": expense.note,
+        "created_at": expense.created_at,
+    }
+
+
+def _looks_like_recorded_expense_message(text: str) -> bool:
+    stripped = text.strip()
+    return "已记录" in stripped and "归属" in stripped
+
+
+def _looks_like_delete_reference_message(text: str) -> bool:
+    return _looks_like_recorded_expense_message(text) and any(token in text for token in ("删除", "删掉", "撤销"))
+
+
+def _extract_recorded_expense_clues(text: str) -> Optional[dict[str, object]]:
+    category = ""
+    amount: Optional[float] = None
+    currency = ""
+    user_name = ""
+    note = ""
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        record_match = _RECORDED_EXPENSE_LINE_RE.match(line)
+        if record_match:
+            category = record_match.group("category").strip()
+            amount = float(record_match.group("amount"))
+            currency = _normalize_delete_currency(record_match.group("currency"))
+            continue
+        owner_match = _RECORDED_OWNER_LINE_RE.match(line)
+        if owner_match:
+            user_name = owner_match.group("user_name").strip()
+            continue
+        note_match = _RECORDED_NOTE_LINE_RE.match(line)
+        if note_match:
+            note = note_match.group("note").strip()
+
+    if amount is None or not category or not currency:
+        return None
+    return {
+        "category": category,
+        "amount": amount,
+        "currency": currency,
+        "user_name": user_name,
+        "note": note,
+    }
+
+
+def _find_delete_candidates_from_record_message(text: str, user_id: int) -> list[dict[str, object]]:
+    clues = _extract_recorded_expense_clues(text)
+    if clues is None:
         return []
 
-    amount = float(match.group(1))
-    hint = (match.group(2) or "").strip()
     candidates = []
     expenses = get_expenses(user_ids=_family_user_ids_for_chat(user_id), limit=30)
     for expense in expenses:
-        if abs(float(expense.amount) - amount) > 0.01:
+        if expense.category != clues["category"]:
             continue
-        if not _matches_delete_hint(expense, hint):
+        if abs(float(expense.amount) - float(clues["amount"])) > 0.01:
             continue
-        candidates.append({
-            "id": expense.id,
-            "user_name": expense.user_name,
-            "category": expense.category,
-            "amount": expense.amount,
-            "currency": expense.currency,
-            "note": expense.note,
-            "created_at": expense.created_at,
-        })
+        if expense.currency.upper() != str(clues["currency"]).upper():
+            continue
+        if clues["user_name"] and expense.user_name != clues["user_name"]:
+            continue
+        clue_note = str(clues["note"]).strip()
+        expense_note = expense.note.strip()
+        if clue_note:
+            if not expense_note:
+                continue
+            if clue_note != expense_note and clue_note not in expense_note and expense_note not in clue_note:
+                continue
+        candidates.append(_expense_to_delete_candidate(expense))
     return candidates
+
+
+def _find_delete_candidates(text: str, user_id: int) -> list[dict[str, object]]:
+    stripped = text.strip()
+    match = _DELETE_BY_DESC_RE.match(stripped)
+    if match:
+        amount = float(match.group(1))
+        hint = (match.group(2) or "").strip()
+        candidates = []
+        expenses = get_expenses(user_ids=_family_user_ids_for_chat(user_id), limit=30)
+        for expense in expenses:
+            if abs(float(expense.amount) - amount) > 0.01:
+                continue
+            if not _matches_delete_hint(expense, hint):
+                continue
+            candidates.append(_expense_to_delete_candidate(expense))
+        return candidates
+    if _looks_like_delete_reference_message(stripped):
+        return _find_delete_candidates_from_record_message(stripped, user_id)
+    return []
 
 
 def _looks_like_memory_candidate(text: str) -> bool:
@@ -613,8 +707,15 @@ def _detect_memory_candidate(user_id: int, text: str) -> Optional[dict[str, obje
     return None
 
 
-def _is_yes_confirmation(text: str) -> bool:
+def _normalize_confirmation_text(text: str) -> str:
     stripped = text.strip().lower()
+    stripped = re.sub(r"^(?:小灰毛[，,:\s：]*)+", "", stripped)
+    stripped = stripped.strip(" \t\r\n。！!，,；;：:")
+    return stripped
+
+
+def _is_yes_confirmation(text: str) -> bool:
+    stripped = _normalize_confirmation_text(text)
     return stripped in {
         "是",
         "好",
@@ -627,13 +728,17 @@ def _is_yes_confirmation(text: str) -> bool:
         "记吧",
         "记住",
         "要",
+        "继续",
+        "继续吧",
+        "继续处理",
+        "继续删",
         "yes",
         "y",
     }
 
 
 def _is_no_confirmation(text: str) -> bool:
-    stripped = text.strip().lower()
+    stripped = _normalize_confirmation_text(text)
     return stripped in {
         "不",
         "不用",
@@ -996,9 +1101,70 @@ def _extract_final_reply(reply: str) -> Optional[str]:
     if match:
         return match.group(1).strip()
     cleaned = (reply or "").strip()
+    if cleaned.startswith("<FINAL>"):
+        cleaned = cleaned[len("<FINAL>"):].strip()
+    if cleaned.endswith("</FINAL>"):
+        cleaned = cleaned[:-len("</FINAL>")].strip()
     if cleaned and "<ACTION>" not in cleaned:
         return cleaned
     return None
+
+
+def _extract_action_reply(result: dict[str, Any]) -> str:
+    return str(result.get("reply") or result.get("message") or result.get("confirmation") or "").strip()
+
+
+async def _continue_delete_action(
+    *,
+    original_text: str,
+    user_id: int,
+    user_name: str,
+) -> str:
+    from app.core.action_registry import run_action_async
+
+    delete_expense_id = _extract_delete_expense_id(original_text)
+    if delete_expense_id is not None:
+        result = await run_action_async(
+            "finance.delete_by_id",
+            user_id=user_id,
+            user_name=user_name,
+            text=f"删除 #{delete_expense_id}",
+        )
+        reply = _extract_action_reply(result)
+        if reply:
+            return reply
+
+    if any(token in original_text for token in ("最近一笔", "上一笔")):
+        result = await run_action_async(
+            "finance.delete_last",
+            user_id=user_id,
+            user_name=user_name,
+            text=original_text,
+        )
+        reply = _extract_action_reply(result)
+        if reply:
+            return reply
+
+    candidates = _find_delete_candidates(original_text, user_id)
+    if len(candidates) == 1:
+        expense_id = int(candidates[0]["id"])
+        result = await run_action_async(
+            "finance.delete_by_id",
+            user_id=user_id,
+            user_name=user_name,
+            text=f"删除 #{expense_id}",
+        )
+        reply = _extract_action_reply(result)
+        if reply:
+            return reply
+    if len(candidates) > 1:
+        reply = _maybe_build_delete_candidate_reply(original_text, user_id)
+        if reply:
+            return reply
+
+    if _looks_like_recorded_expense_message(original_text):
+        return "我先认出这条是之前的记账确认了，但还没法唯一定位到一笔。你回 `删除 #账目ID`，或者直接发金额加备注，我就能继续删。"
+    return "我还没法确定要删哪一笔。把那笔的时间、金额或备注再发我一下，我就继续处理。"
 
 
 def _format_action_result(result: dict[str, Any]) -> str:
@@ -1790,33 +1956,17 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     pending_action_key = (thread_owner_id, session.chat_id)
     pending_action = _PENDING_ACTION.get(pending_action_key)
     if pending_action:
+        action_label = str(pending_action.get("action_label") or "")
+        original_text = pending_action["original_text"]
         if _is_yes_confirmation(text):
-            from app.core.action_registry import run_action_async
-
             _PENDING_ACTION.pop(pending_action_key, None)
-            action_label = str(pending_action.get("action_label") or "")
-            original_text = pending_action["original_text"]
             if action_label == "delete an expense record":
-                delete_expense_id = _extract_delete_expense_id(original_text)
-                if delete_expense_id is not None:
-                    result = await run_action_async(
-                        "finance.delete_by_id",
-                        user_id=user_id,
-                        user_name=user_name,
-                        text=f"删除 #{delete_expense_id}",
-                    )
-                    reply = str(result.get("reply") or result.get("message") or "").strip()
-                    if reply:
-                        return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
-                if any(token in original_text for token in ("最近一笔", "上一笔")):
-                    reply = await _run_codex_resident_loop(
-                        text=original_text,
-                        user_id=user_id,
-                        user_name=user_name,
-                        session=session,
-                        assistant_id=assistant_id,
-                    )
-                    return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+                reply = await _continue_delete_action(
+                    original_text=original_text,
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+                return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
             reply = await _run_codex_resident_loop(
                 text=original_text,
                 user_id=user_id,
@@ -1829,6 +1979,19 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
             _PENDING_ACTION.pop(pending_action_key, None)
             reply = "好呀，那这次小灰毛先不动它。"
             return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+        if action_label == "delete an expense record":
+            _PENDING_ACTION.pop(pending_action_key, None)
+            delete_expense_id = _extract_delete_expense_id(text)
+            if delete_expense_id is not None:
+                reply = await _continue_delete_action(
+                    original_text=f"删除 #{delete_expense_id}",
+                    user_id=user_id,
+                    user_name=user_name,
+                )
+                return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+            reply = _maybe_build_delete_candidate_reply(text, user_id)
+            if reply:
+                return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
         _PENDING_ACTION.pop(pending_action_key, None)
 
     memory_admin_reply = await _maybe_handle_memory_admin(text, user_id)
