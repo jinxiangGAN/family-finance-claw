@@ -332,6 +332,7 @@ def skill_query_period_spending(user_id: int, user_name: str, params: dict) -> d
     include_special = bool(params.get("include_special", False))
     start_date = str(params.get("start_date", "")).strip()
     end_date = str(params.get("end_date", "")).strip()
+    period_label = str(params.get("period_label", "")).strip()
     limit = min(max(int(params.get("limit", 20)), 1), 100)
 
     raw_days = params.get("days")
@@ -351,6 +352,7 @@ def skill_query_period_spending(user_id: int, user_name: str, params: dict) -> d
             start_date=start_date,
             end_date=end_date,
             days=days,
+            label=period_label,
         )
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
@@ -1384,6 +1386,7 @@ TOOL_DEFINITIONS: list[dict] = [
                     "days": {"type": "integer", "description": "当 period=recent_days 时填写天数，例如 7"},
                     "start_date": {"type": "string", "description": "自定义开始日期，格式 YYYY-MM-DD"},
                     "end_date": {"type": "string", "description": "自定义结束日期，格式 YYYY-MM-DD"},
+                    "period_label": {"type": "string", "description": "可选：用于回复展示的原始时间短语，例如“去年12月”或“4月1日”"},
                     "category": {"type": "string", "description": "可选：只看某个分类", "enum": ["", *CATEGORIES]},
                     "limit": {"type": "integer", "description": "mode=items 时最多返回多少条，默认20"},
                     "include_special": {"type": "boolean", "description": "是否包含专项开销，默认 false"},

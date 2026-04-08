@@ -174,6 +174,7 @@ _SHORT_QUERY_SKILL_NAMES = {
     "query_category_items",
     "query_recent_expenses",
     "query_period_spending",
+    "query_monthly_archive",
     "query_summary",
     "query_budget",
 }
@@ -273,6 +274,7 @@ def _looks_like_short_query_turn(text: str) -> bool:
         return False
     if _looks_like_record_expense(stripped) or _looks_like_budget_write(stripped):
         return False
+    period_phrase = _extract_period_phrase(stripped)
     if any(
         pattern.match(stripped)
         for pattern in (_RECENT_EXPENSES_RE, _TODAY_TOTAL_RE, _MONTH_TOTAL_RE, _DETAIL_QUERY_RE, _BUDGET_QUERY_RE)
@@ -313,6 +315,7 @@ def _looks_like_short_query_turn(text: str) -> bool:
                 "查",
             )
         )
+        or period_phrase is not None
         or bool(re.search(r"\d{4}-\d{1,2}-\d{1,2}", stripped))
     ):
         return True
@@ -1527,17 +1530,15 @@ This turn is a short finance query turn. First understand the wording and scope,
 
 You must do exactly one of these:
 1. Output one resident action:
-<ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"me"}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_today_total","params":{{"scope":"spouse"}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_today_items","params":{{"scope":"family"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"total","period":"today"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"total","period":"yesterday"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"family","mode":"items","period":"this_week"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"total","period":"recent_days","days":7}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_monthly_total","params":{{"scope":"me"}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_summary","params":{{"scope":"family"}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_category_total","params":{{"scope":"spouse","category":"餐饮"}}}}</ACTION>
-<ACTION>{{"kind":"bridge.skill","name":"query_category_items","params":{{"scope":"spouse","category":"餐饮","limit":20}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"me","mode":"items","period":"custom","start_date":"2026-04-01","end_date":"2026-04-01","period_label":"2026年4月1日"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"family","mode":"items","period":"custom","start_date":"2026-02-01","end_date":"2026-02-28","period_label":"2026年2月"}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"spouse","mode":"total","period":"custom","start_date":"2025-12-01","end_date":"2025-12-31","period_label":"去年12月","category":"餐饮"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_recent_expenses","params":{{"scope":"spouse","limit":10}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_monthly_archive","params":{{"scope":"family","year":2026,"month":2}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_budget","params":{{}}}}</ACTION>
 2. Output one short clarification:
 <FINAL>...</FINAL>
@@ -1551,14 +1552,15 @@ Rules:
    - `family` for `全家` / `家庭` / `我们`
 4. For flexible period questions such as `昨天/前天/本周/上周/上个月/最近7天`, prefer `query_period_spending`.
 5. Use `mode=total` for totals, `mode=items` for detail/item-list wording, and `mode=summary` for category breakdown wording.
-6. Use `period` values like `today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`, or `recent_days`.
-7. When `period=recent_days`, include `days`.
-8. For category-specific questions, include `category`.
-9. For very simple `今天/今日` total questions, `query_today_total` is still okay; for `今天/今日` item lists, `query_today_items` is still okay.
-10. For `本月/这个月` total questions, `query_monthly_total` is still okay.
-11. For budget questions, prefer `query_budget`.
-12. If the wording is understandable enough for one query action, do not ask a clarification question.
-13. Output only `<ACTION>` or `<FINAL>`.
+6. For explicit calendar dates or months such as `2026年4月1日` / `4月1日` / `2026年4月` / `4月份` / `去年12月`, use `query_period_spending` with `period=custom` plus concrete `start_date` and `end_date`.
+7. Use `period` values like `today`, `yesterday`, `day_before_yesterday`, `this_week`, `last_week`, `this_month`, `last_month`, or `recent_days`.
+8. When `period=recent_days`, include `days`.
+9. For bare month/day wording without a year, assume the current year unless the user explicitly gave another year.
+10. For category-specific questions, include `category`.
+11. For whole-calendar-month historical summaries where year/month is explicit, `query_monthly_archive` is also acceptable, especially for totals or summary-style questions rather than itemized details.
+12. For budget questions, prefer `query_budget`.
+13. If the wording is understandable enough for one query action, do not ask a clarification question.
+14. Output only `<ACTION>` or `<FINAL>`.
 
 Environment:
 - Current time: {now}

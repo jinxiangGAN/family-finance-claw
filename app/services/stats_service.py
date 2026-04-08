@@ -35,6 +35,7 @@ def resolve_period_range(
     start_date: str = "",
     end_date: str = "",
     days: Optional[int] = None,
+    label: str = "",
 ) -> dict[str, str]:
     """Resolve a named or explicit period into ISO start/end bounds."""
     tz = ZoneInfo(TIMEZONE)
@@ -55,10 +56,10 @@ def resolve_period_range(
         start = datetime(start_day.year, start_day.month, start_day.day, tzinfo=tz)
         end_exclusive = end_day + timedelta(days=1)
         end = datetime(end_exclusive.year, end_exclusive.month, end_exclusive.day, tzinfo=tz)
-        label = start_date if start_date == end_date else f"{start_date} 到 {end_date}"
+        label_text = label or (start_date if start_date == end_date else f"{start_date} 到 {end_date}")
         return {
             "period": "custom",
-            "label": label,
+            "label": label_text,
             "start": start.isoformat(),
             "end": end.isoformat(),
             "start_date": start_day.isoformat(),
