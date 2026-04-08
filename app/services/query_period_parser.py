@@ -19,6 +19,10 @@ CHINESE_DATE_RANGE_RE = re.compile(
     r"(?P<start>(?:(?:\d{4}年|今年|去年|明年)\s*)?\d{1,2}月\s*\d{1,2}[日号])\s*(?:到|至|—|–|-|~)\s*"
     r"(?P<end>(?:(?:\d{4}年|今年|去年|明年)\s*)?\d{1,2}月\s*\d{1,2}[日号])"
 )
+ABBREVIATED_CHINESE_DATE_RANGE_RE = re.compile(
+    r"(?P<start>(?:(?:\d{4}年|今年|去年|明年)\s*)?\d{1,2}月\s*\d{1,2}[日号])\s*(?:到|至|—|–|-|~)\s*"
+    r"(?P<end_day>\d{1,2})[日号]"
+)
 ABSOLUTE_CHINESE_DATE_RE = re.compile(r"(?P<year>\d{4})年\s*(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]")
 RELATIVE_CHINESE_DATE_RE = re.compile(r"(?P<relative>今年|去年|明年)\s*(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]")
 BARE_CHINESE_DATE_RE = re.compile(r"(?<!\d)(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号](?!\d)")
@@ -148,20 +152,35 @@ def _search_cn_single_date(text: str) -> tuple[date, str] | None:
 
 def _search_cn_date_range(text: str) -> tuple[date, date, str] | None:
     match = CHINESE_DATE_RANGE_RE.search(text)
-    if not match:
-        return None
     today = _local_today()
-    start_info = _parse_cn_date_token(match.group("start"), today=today)
+    if match:
+        start_info = _parse_cn_date_token(match.group("start"), today=today)
+        if start_info is None:
+            return None
+        start_day, start_label = start_info
+        end_info = _parse_cn_date_token(match.group("end"), today=today, default_year=start_day.year)
+        if end_info is None:
+            return None
+        end_day, end_label = end_info
+        if end_day < start_day:
+            return None
+        return start_day, end_day, f"{start_label} 到 {end_label}"
+
+    abbreviated_match = ABBREVIATED_CHINESE_DATE_RANGE_RE.search(text)
+    if not abbreviated_match:
+        return None
+    start_info = _parse_cn_date_token(abbreviated_match.group("start"), today=today)
     if start_info is None:
         return None
     start_day, start_label = start_info
-    end_info = _parse_cn_date_token(match.group("end"), today=today, default_year=start_day.year)
-    if start_info is None or end_info is None:
+    try:
+        end_day_of_month = int(abbreviated_match.group("end_day"))
+        end_day = date(start_day.year, start_day.month, end_day_of_month)
+    except (TypeError, ValueError):
         return None
-    end_day, end_label = end_info
     if end_day < start_day:
         return None
-    return start_day, end_day, f"{start_label} 到 {end_label}"
+    return start_day, end_day, f"{start_label} 到 {start_day.month}月{end_day.day}日"
 
 
 def _parse_cn_date_token(
