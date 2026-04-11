@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_HISTORY: dict[tuple[int, int], list[dict[str, str]]] = {}
 _PENDING_MEMORY: dict[tuple[int, int], dict[str, object]] = {}
-_PENDING_ACTION: dict[tuple[int, int], dict[str, str]] = {}
+_PENDING_ACTION: dict[tuple[int, int], dict[str, object]] = {}
 _MAX_HISTORY_TURNS = 6
 _MAX_DB_RECENT_EXPENSES = 5
 _MAX_DB_RECENT_MEMORIES = 5
@@ -122,7 +122,7 @@ _BUDGET_SET_RE = re.compile(
     r"^\s*([\u4e00-\u9fffA-Za-z_]+)\s*预算(?:\s*(?:设为|改成|改为|调整为))?\s*(\d+(?:\.\d+)?)(?:\s*(?:[A-Za-z]{3}|元|块|人民币))?\s*$"
 )
 _WRITE_ACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(?:^|\s)(?:删除|删掉|撤销)(?:最近一笔|上一笔|#?\d+|这笔|那笔)?"), "delete an expense record"),
+    (re.compile(r"^\s*(?:删除|删掉|撤销)\s*(?:最近一笔|上一笔|#?\d+|这笔|那笔)\s*$"), "delete an expense record"),
     (re.compile(r"(?:开始|创建|开启).*(?:旅行|计划|专项|事件)"), "create or activate a special plan"),
     (re.compile(r"(?:结束|关闭).*(?:旅行|计划|专项|事件)"), "close a special plan"),
 ]
@@ -138,6 +138,7 @@ _ACTION_FUNCTION_HINTS: dict[str, tuple[str, str]] = {
 }
 
 _DELETE_BY_ID_RE = re.compile(r"^\s*删除\s*(?:id\s*)?#?(?P<expense_id>\d+)(?:\s*(?:这笔|这条|笔消费|消费|记录))?\s*$", re.IGNORECASE)
+_DELETE_LAST_RE = re.compile(r"^\s*(?:删除|删掉|撤销)\s*(?:最近一笔|上一笔)\s*$")
 _DELETE_HELP_RE = re.compile(r"^\s*(?:怎么删|如何删|怎么删除|如何删除|删除入口|怎么撤销|如何撤销|删账怎么弄|怎么删账)\s*[？?]?\s*$")
 _RECENT_EXPENSES_RE = re.compile(r"^\s*(?:看看|看下|查看)?最近\s*(\d+)?\s*笔(?:账|开销|消费|记录)?\s*$")
 _MONTH_TOTAL_RE = re.compile(
@@ -501,7 +502,7 @@ def _family_user_ids_for_chat(user_id: int) -> list[int]:
 
 
 def _matches_delete_hint(expense, hint: str) -> bool:
-    normalized = hint.strip().lower()
+    normalized = re.sub(r"(?:这一笔|那一笔|这笔|那笔|这条|那条|花销|消费|记录)\s*$", "", hint.strip()).lower()
     if not normalized:
         return True
     haystacks = [
@@ -834,6 +835,68 @@ def _maybe_build_delete_candidate_reply(text: str, user_id: int) -> Optional[str
     return "\n".join(lines)
 
 
+def _format_delete_candidate(item: dict[str, object]) -> str:
+    return (
+        f"#{item['id']} {item['user_name']} / {item['category']} {float(item['amount']):.2f} {item['currency']} "
+        f"/ 备注：{item['note'] or '无'}"
+    )
+
+
+def _build_delete_confirmation_reply(item: dict[str, object], *, latest: bool = False) -> str:
+    prefix = "我准备撤销最近一笔：" if latest else "我找到 1 条匹配的账目："
+    return (
+        f"{prefix}\n"
+        f"{_format_delete_candidate(item)}\n"
+        "如果就是这笔，回“是”或“继续”就行；如果不是这笔，回“不要”或直接发 `删除 #账目ID`。"
+    )
+
+
+def _looks_like_delete_request(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _DELETE_BY_ID_RE.match(stripped) or _DELETE_LAST_RE.match(stripped):
+        return True
+    if _DELETE_BY_DESC_RE.match(stripped) or _looks_like_delete_reference_message(stripped):
+        return True
+    return bool(re.match(r"^\s*(?:删除|删掉|撤销)\s*(?:这笔|那笔)\s*$", stripped))
+
+
+def _resolve_delete_request(text: str, user_id: int) -> Optional[dict[str, object]]:
+    stripped = text.strip()
+    delete_expense_id = _extract_delete_expense_id(stripped)
+    if delete_expense_id is not None:
+        return {"kind": "execute", "expense_id": delete_expense_id}
+
+    if _DELETE_LAST_RE.match(stripped):
+        latest = get_recent_expenses(user_id, limit=1)
+        if not latest:
+            return {"kind": "reply", "reply": "最近没有可以删除的记录。"}
+        item = _expense_to_delete_candidate(latest[0])
+        return {
+            "kind": "confirm",
+            "expense_id": int(item["id"]),
+            "reply": _build_delete_confirmation_reply(item, latest=True),
+        }
+
+    candidates = _find_delete_candidates(stripped, user_id)
+    if len(candidates) == 1:
+        item = candidates[0]
+        return {
+            "kind": "confirm",
+            "expense_id": int(item["id"]),
+            "reply": _build_delete_confirmation_reply(item),
+        }
+    if len(candidates) > 1:
+        reply = _maybe_build_delete_candidate_reply(stripped, user_id)
+        if reply:
+            return {"kind": "reply", "reply": reply}
+
+    if _looks_like_delete_request(stripped):
+        return {"kind": "reply", "reply": "我还没法确定要删哪一笔。把金额、时间、备注，或者直接发 `删除 #账目ID` 给我就行。"}
+    return None
+
+
 def _maybe_build_delete_help_reply(text: str) -> Optional[str]:
     if not _DELETE_HELP_RE.match(text.strip()):
         return None
@@ -1085,8 +1148,20 @@ async def _continue_delete_action(
     original_text: str,
     user_id: int,
     user_name: str,
+    resolved_expense_id: Optional[int] = None,
 ) -> str:
     from app.core.action_registry import run_action_async
+
+    if resolved_expense_id is not None:
+        result = await run_action_async(
+            "finance.delete_by_id",
+            user_id=user_id,
+            user_name=user_name,
+            text=f"删除 #{resolved_expense_id}",
+        )
+        reply = _extract_action_reply(result)
+        if reply:
+            return reply
 
     delete_expense_id = _extract_delete_expense_id(original_text)
     if delete_expense_id is not None:
@@ -1926,6 +2001,8 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     if pending_action:
         action_label = str(pending_action.get("action_label") or "")
         original_text = pending_action["original_text"]
+        resolved_expense_id_raw = pending_action.get("resolved_expense_id")
+        resolved_expense_id = int(resolved_expense_id_raw) if resolved_expense_id_raw is not None else None
         if _is_yes_confirmation(text):
             _PENDING_ACTION.pop(pending_action_key, None)
             if action_label == "delete an expense record":
@@ -1933,6 +2010,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
                     original_text=original_text,
                     user_id=user_id,
                     user_name=user_name,
+                    resolved_expense_id=resolved_expense_id,
                 )
                 return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
             reply = await _run_codex_resident_loop(
@@ -1955,6 +2033,7 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
                     original_text=f"删除 #{delete_expense_id}",
                     user_id=user_id,
                     user_name=user_name,
+                    resolved_expense_id=delete_expense_id,
                 )
                 return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
             reply = _maybe_build_delete_candidate_reply(text, user_id)
@@ -1970,9 +2049,26 @@ async def agent_handle(text: str, user_id: int, user_name: str, session: Session
     if delete_help_reply:
         return _remember_and_reply(thread_owner_id, session.chat_id, text, delete_help_reply)
 
-    delete_candidate_reply = _maybe_build_delete_candidate_reply(text, user_id)
-    if delete_candidate_reply:
-        return _remember_and_reply(thread_owner_id, session.chat_id, text, delete_candidate_reply)
+    delete_request = _resolve_delete_request(text, user_id)
+    if delete_request is not None:
+        kind = str(delete_request.get("kind") or "")
+        if kind == "execute":
+            reply = await _continue_delete_action(
+                original_text=text,
+                user_id=user_id,
+                user_name=user_name,
+                resolved_expense_id=int(delete_request["expense_id"]),
+            )
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
+        reply = str(delete_request.get("reply") or "").strip()
+        if reply:
+            if kind == "confirm":
+                _PENDING_ACTION[pending_action_key] = {
+                    "action_label": "delete an expense record",
+                    "original_text": text,
+                    "resolved_expense_id": int(delete_request["expense_id"]),
+                }
+            return _remember_and_reply(thread_owner_id, session.chat_id, text, reply)
 
     pending_key = (thread_owner_id, session.chat_id)
     pending = _PENDING_MEMORY.get(pending_key)
