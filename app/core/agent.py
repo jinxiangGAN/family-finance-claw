@@ -277,6 +277,8 @@ def _looks_like_short_query_turn(text: str) -> bool:
         return False
     if _looks_like_record_expense(stripped) or _looks_like_budget_write(stripped):
         return False
+    if _looks_like_recent_expenses_query(stripped):
+        return True
     if _looks_like_exchange_rate_query(stripped):
         return True
     period_phrase = _extract_period_phrase(stripped)
@@ -932,6 +934,18 @@ def _build_action_confirmation(action_label: str, original_text: str) -> str:
         "要继续的话，回“小灰毛，继续”或者直接回“是”；"
         "如果先不做，回“不要”就行。"
     )
+
+
+def _looks_like_recent_expenses_query(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _RECENT_EXPENSES_RE.match(stripped):
+        return True
+    return bool(re.match(
+        r"^\s*(?:查看|看看|看下|查下|查一下)?\s*(?:近期|最近)(?:的)?(?:消费|花费|花销|开销|支出|账单|记录|花了什么)\s*[？?]?\s*$",
+        stripped,
+    ))
 
 
 def _detect_fast_finance_intent(text: str, image_path: Optional[str] = None) -> Optional[str]:
@@ -1774,6 +1788,7 @@ You must do exactly one of these:
 <ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"family","mode":"items","period":"custom","start_date":"2026-02-01","end_date":"2026-02-28","period_label":"2026年2月"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_period_spending","params":{{"scope":"spouse","mode":"total","period":"custom","start_date":"2025-12-01","end_date":"2025-12-31","period_label":"去年12月","category":"餐饮"}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_recent_expenses","params":{{"scope":"spouse","limit":10}}}}</ACTION>
+<ACTION>{{"kind":"bridge.skill","name":"query_recent_expenses","params":{{"scope":"me","limit":5}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_monthly_archive","params":{{"scope":"family","year":2026,"month":2}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_budget","params":{{}}}}</ACTION>
 <ACTION>{{"kind":"bridge.skill","name":"query_exchange_rate","params":{{"base_currency":"USD","quote_currency":"SGD"}}}}</ACTION>
@@ -1797,8 +1812,9 @@ Rules:
 11. For whole-calendar-month historical summaries where year/month is explicit, `query_monthly_archive` is also acceptable, especially for totals or summary-style questions rather than itemized details.
 12. For budget questions, prefer `query_budget`.
 13. For exchange-rate questions, use `query_exchange_rate`.
-14. If the wording is understandable enough for one query action, do not ask a clarification question.
-15. Output only `<ACTION>` or `<FINAL>`.
+14. For `近期消费` / `最近花了什么` / `最近几笔` 这类请求，优先用 `query_recent_expenses`.
+15. If the wording is understandable enough for one query action, do not ask a clarification question.
+16. Output only `<ACTION>` or `<FINAL>`.
 
 Environment:
 - Current time: {now}
@@ -1840,6 +1856,43 @@ Resident action result (JSON):
 """
 
 
+async def _run_short_query_fallback(
+    *,
+    text: str,
+    user_id: int,
+    user_name: str,
+    session: Session,
+    assistant_id: str,
+) -> str:
+    from app.core.action_registry import run_action_async
+
+    if _looks_like_recent_expenses_query(text):
+        log_event(
+            logger,
+            "agent.short_query_recent_expenses_fallback",
+            assistant_id=assistant_id,
+            user_id=user_id,
+            chat_id=session.chat_id,
+        )
+        result = await run_action_async(
+            "finance.recent_expenses",
+            user_id=user_id,
+            user_name=user_name,
+            text=text,
+        )
+        reply = str(result.get("reply") or "").strip()
+        if reply:
+            return reply
+
+    return await _run_codex_resident_loop(
+        text=text,
+        user_id=user_id,
+        user_name=user_name,
+        session=session,
+        assistant_id=assistant_id,
+    )
+
+
 async def _run_short_query_turn(
     *,
     text: str,
@@ -1871,7 +1924,7 @@ async def _run_short_query_turn(
             user_id=user_id,
             chat_id=session.chat_id,
         )
-        fallback_reply = await _run_codex_resident_loop(
+        fallback_reply = await _run_short_query_fallback(
             text=text,
             user_id=user_id,
             user_name=user_name,
@@ -1890,7 +1943,7 @@ async def _run_short_query_turn(
             kind=str(action_request.get("kind") or ""),
             name=str(action_request.get("name") or ""),
         )
-        fallback_reply = await _run_codex_resident_loop(
+        fallback_reply = await _run_short_query_fallback(
             text=text,
             user_id=user_id,
             user_name=user_name,
@@ -1905,7 +1958,7 @@ async def _run_short_query_turn(
         user_name=user_name,
     )
     if not action_result.get("success"):
-        fallback_reply = await _run_codex_resident_loop(
+        fallback_reply = await _run_short_query_fallback(
             text=text,
             user_id=user_id,
             user_name=user_name,
